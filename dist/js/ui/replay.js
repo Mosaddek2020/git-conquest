@@ -15,7 +15,7 @@ import { World, stripAnsi } from '../git/world.js';
 import { Shell } from '../git/shell.js';
 import { seedRemote, teammateCommit } from '../git/github.js';
 
-function splitTop(line) {
+export function splitTop(line) {
   const parts = [];
   let cur = '', q = null;
   for (const ch of line) {
@@ -30,7 +30,7 @@ function splitTop(line) {
 
 const slug = s => s.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 24) || 'file';
 
-function expand(seg, world, shell) {
+export function expand(seg, world, shell) {
   let m;
   if (seg === 'init') return { cmd: 'mkdir -p ~/project && cd ~/project && git init -q -b main', shown: 'git init' };
   if ((m = seg.match(/^commit\s+"([^"]+)"(?:\s+(\S+))?$/))) {

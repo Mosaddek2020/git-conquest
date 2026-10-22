@@ -125,7 +125,13 @@ function renderPractice(lesson) {
   const ls = lessonState(lesson.id);
   const lab = new Lab(lesson, {
     already: ls.lab,
-    onComplete: () => { completeLab(lesson.id); },
+    onComplete: () => {
+      completeLab(lesson.id);
+      // unlock the Prove tab in place without rebuilding the lab
+      const tabs = document.querySelectorAll('.stage-tab');
+      if (tabs[1]) { tabs[1].classList.add('is-done'); tabs[1].querySelector('.n').textContent = '✓'; }
+      if (tabs[2]) { tabs[2].disabled = false; tabs[2].removeAttribute('title'); const d = tabs[2].querySelector('.d'); if (d) d.textContent = STAGES[2].desc; }
+    },
   });
   lab.onProceed = () => { location.hash = `#/lesson/${lesson.id}/prove`; };
   setTimeout(() => lab.term.focus(), 50);

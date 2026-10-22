@@ -530,13 +530,13 @@ export function applyMerge(repo, ours, merge) {
   w.pruneEmptyDirs(repo.root);
 }
 
-export function conflictLines(merge) {
+export function conflictLines(merge, theirsLabel = 'theirs') {
   const out = [];
   const touched = new Set();
   for (const c of merge.conflicts) {
     if (c.kind === 'content') { out.push(`Auto-merging ${c.path}`); out.push(`CONFLICT (content): Merge conflict in ${c.path}`); }
     else if (c.kind === 'add/add') { out.push(`Auto-merging ${c.path}`); out.push(`CONFLICT (add/add): Merge conflict in ${c.path}`); }
-    else out.push(`CONFLICT (modify/delete): ${c.path} deleted in ${c.deletedBy === 'ours' ? 'HEAD' : 'theirs'} and modified in ${c.deletedBy === 'ours' ? 'theirs' : 'HEAD'}. Version of ${c.path} left in tree.`);
+    else out.push(`CONFLICT (modify/delete): ${c.path} deleted in ${c.deletedBy === 'ours' ? 'HEAD' : theirsLabel} and modified in ${c.deletedBy === 'ours' ? theirsLabel : 'HEAD'}. Version of ${c.path} left in tree.`);
     touched.add(c.path);
   }
   return out;
