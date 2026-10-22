@@ -1,4 +1,4 @@
-// Realm 11 · GitHub Automation: Actions, CI checks, secrets, Dependabot, Pages.
+// Realm 11 · GitHub Automation: Actions, CI checks, secrets, Dependabot, Pages, continuous delivery.
 
 import { parseWorkflow } from '../git/github.js';
 
@@ -20,13 +20,50 @@ const autoApprove = (owner) => (ev, t) => {
   }
 };
 
+// ---------- continuous delivery fixtures ----------
+
+const TOKEN = '${{ secrets.DEPLOY_TOKEN }}';
+const testJob = ['  test:', '    runs-on: ubuntu-latest', '    steps:', '      - uses: actions/checkout@v4', '      - run: npm ci', '      - run: npm test'];
+const deployJob = (id, env) => [`  ${id}:`, '    needs: test', `    environment: ${env}`, '    runs-on: ubuntu-latest', '    steps:', '      - uses: actions/checkout@v4', `      - run: ./scripts/deploy.sh ${env}`, '        env:', `          DEPLOY_TOKEN: ${TOKEN}`];
+const DEPLOY_YML = ['name: Deploy', 'on:', '  push:', '    branches: [main]', 'jobs:', ...testJob, ...deployJob('deploy-staging', 'staging')].join('\n') + '\n';
+const RELEASE_YML = ['name: Release', 'on:', '  push:', "    tags: ['v*']", '  workflow_dispatch:', 'jobs:', ...testJob, ...deployJob('deploy-production', 'production')].join('\n') + '\n';
+const DEPLOY_SMOKE_YML = DEPLOY_YML + '      - name: Smoke test\n        run: curl -f https://staging.forecast.example/\n';
+const FORECAST_FILES = {
+  'package.json': '{\n  "name": "forecast",\n  "version": "1.0.0",\n  "scripts": { "test": "jest", "lint": "eslint ." }\n}\n',
+  'index.html': '<!doctype html>\n<title>Forecast</title>\n<div id="app"></div>\n<script type="module" src="app.js"></script>\n',
+  'app.js': 'export function render(data) {\n  return `<h1>${data.city}</h1><p>${data.temp}°C</p>`;\n}\n',
+  'scripts/deploy.sh': '#!/bin/sh\n# Uploads the build to our hosting provider.\n# Usage: ./scripts/deploy.sh <environment>\n# Needs the DEPLOY_TOKEN environment variable.\nset -e\n[ -n "$DEPLOY_TOKEN" ] || { echo "DEPLOY_TOKEN is not set"; exit 1; }\nhostctl upload --env "$1" --token "$DEPLOY_TOKEN" .\n',
+  '.github/workflows/ci.yml': CI_YML,
+};
+const APP_HOURLY = 'export function render(data) {\n  return `<h1>${data.city}</h1><p>${data.temp}°C</p>` + renderHourly(data);\n}\n\nfunction renderHourly(data) {\n  // one row per hour\n  return data.hourly.map(h => `<li>${h.time}: ${h.temp}°C</li>`).join("");\n}\n';
+
+const jobRes = (run, id) => run.jobs.find(j => j.id === id)?.conclusion;
+const passesToken = s => Object.entries(s.env || {}).some(([k, v]) => k === 'DEPLOY_TOKEN' && /secrets\.DEPLOY_TOKEN/.test(String(v)));
+function pipelineOk(text, env) {
+  if (!text) return null;
+  const wf = parseWorkflow(text);
+  if (wf.errors.length) return null;
+  const testIds = wf.jobs.filter(j => j.steps.some(s => /npm (run )?test/.test(s.run || ''))).map(j => j.id);
+  const dep = wf.jobs.find(j => j.environment?.name === env);
+  if (!dep || !dep.needs.some(n => testIds.includes(n))) return null;
+  const step = dep.steps.find(s => new RegExp(`deploy\\.sh\\s+${env}`).test(s.run || ''));
+  if (!step || !(passesToken(step) || /secrets\.DEPLOY_TOKEN/.test(JSON.stringify(dep.env)))) return null;
+  return { wf, dep };
+}
+const deployOk = text => { const p = pipelineOk(text, 'staging'); return !!p && [].concat(p.wf.triggers.push?.branches || []).includes('main'); };
+const releaseOk = text => { const p = pipelineOk(text, 'production'); return !!p && [].concat(p.wf.triggers.push?.tags || []).some(g => /^v\*/.test(g)) && 'workflow_dispatch' in p.wf.triggers && !p.wf.triggers.push?.branches; };
+const smokeOk = text => { const p = pipelineOk(text, 'staging'); if (!p) return false; const steps = p.dep.steps; const i = steps.findIndex(s => /deploy\.sh/.test(s.run || '')); return steps.slice(i + 1).some(s => /curl\s+(-\w*f\w*\s+|--fail\s+)*.*staging\.forecast\.example\/?(\s|$)/.test(s.run || '') && /(\s-\w*f|--fail)/.test(s.run || '')); };
+const isProdRoot = url => /^(https?:\/\/)?forecast\.example\/?$/.test(url);
+// did an event matching b happen after the last event matching a?
+const after = (t, a, b) => { const ev = t.world.events; let ia = -1; ev.forEach((e, i) => { if (a(e)) ia = i; }); return ia >= 0 && ev.some((e, i) => i > ia && b(e)); };
+
 export default {
   id: 'automation',
   n: 11,
   title: 'GitHub Automation',
-  tagline: 'Actions, required checks, secrets and security',
+  tagline: 'Actions, required checks, secrets, deploy pipelines and rollbacks',
   badge: 'Automaton Wrangler',
-  intro: 'Let GitHub do the boring, critical work for you. Write **GitHub Actions** workflows, gate merges on **required checks**, keep credentials in **secrets** (and know what to do when one leaks), and turn on **Dependabot**.',
+  intro: 'Let GitHub do the boring, critical work for you. Write **GitHub Actions** workflows, gate merges on **required checks**, keep credentials in **secrets** (and know what to do when one leaks), turn on **Dependabot**, then build a **continuous delivery** pipeline with staging, approved production releases and one-command **rollbacks**.',
   lessons: [
     {
       id: 'actions-basics',
@@ -141,6 +178,104 @@ export default {
       ],
     },
     {
+      id: 'cd-pipelines',
+      title: 'Continuous delivery pipelines',
+      summary: 'Staging and production environments, needs:, deploy secrets, tag-driven releases and deployment approvals.',
+      minutes: 22,
+      lab: {
+        cwd: '~/forecast',
+        panels: ['github', 'files'],
+        setup(H) {
+          H.world.deployToken = 'dt_forecast_42';
+          H.remote('you', 'forecast', [{ message: 'Create Forecast app with CI', files: FORECAST_FILES }]);
+          H.tagRemote('you/forecast', 'v1.0.0');
+          H.environment('you/forecast', 'staging', { url: 'https://staging.forecast.example' });
+          H.environment('you/forecast', 'production', { url: 'https://forecast.example', reviewers: ['you'], branches: [], tags: ['v*'] });
+          H.deploy('you/forecast', 'production', 'v1.0.0');
+          H.run('git clone -q https://github.com/you/forecast.git');
+          H.cd('~/forecast');
+        },
+        suggestions: ['curl https://forecast.example/health', 'cat scripts/deploy.sh', 'edit .github/workflows/deploy.yml'],
+        tasks: [
+          { title: 'Ask production what it is running: curl its /health endpoint', solution: 'curl https://forecast.example/health', check: t => t.ran(/curl\b.*(\/\/|\s)forecast\.example\/health/) },
+          { title: 'Write .github/workflows/deploy.yml: on push to main, a test job (checkout, npm ci, npm test) and a deploy-staging job that needs test, uses environment: staging, and runs ./scripts/deploy.sh staging with DEPLOY_TOKEN passed from secrets', hint: 'Start from the example in the "Anatomy of a deploy workflow" lens. The env: block belongs to the deploy step, indented under it.', solution: 'edit .github/workflows/deploy.yml', test: [{ cmd: 'edit .github/workflows/deploy.yml', edit: DEPLOY_YML }], check: t => deployOk(t.file('~/forecast/.github/workflows/deploy.yml')) },
+          { title: 'Commit and push it. The deploy job fails: read why with gh run view', solution: 'git add .github && git commit -m "ci: deploy main to staging" && git push && gh run view', check: t => { const r = t.runsOf('you/forecast', 'deploy.yml')[0]; return !!r && jobRes(r, 'test') === 'success' && r.jobs.some(j => j.def?.environment?.name === 'staging' && j.conclusion === 'failure') && t.ran(/\bgh run (view|watch)/); } },
+          { title: 'Store the token dt_forecast_42 as the secret DEPLOY_TOKEN, then re-run the failed job', hint: 'gh secret set …, then gh run rerun <id> --failed (the run id is shown by gh run list).', solution: 'gh secret set DEPLOY_TOKEN --body "dt_forecast_42" && gh run rerun --failed', check: t => !!t.deployment('you/forecast', 'staging') },
+          { title: 'Check that staging now serves your latest main commit', solution: 'curl https://staging.forecast.example/health', check: t => !!t.deployment('you/forecast', 'staging') && t.ran(/curl\b.*staging\.forecast\.example/) },
+          { title: 'Write .github/workflows/release.yml: on push of tags matching v* (and on workflow_dispatch), a test job and a deploy-production job that needs test, uses environment: production, and runs ./scripts/deploy.sh production with the token', hint: 'Copy deploy.yml and change the trigger and the environment. Tags filter: tags: [\'v*\'].', solution: 'edit .github/workflows/release.yml', test: [{ cmd: 'edit .github/workflows/release.yml', edit: RELEASE_YML }], check: t => releaseOk(t.file('~/forecast/.github/workflows/release.yml')) },
+          { title: 'Commit and push it, then create the annotated tag v1.1.0 and push the tag', solution: 'git add .github && git commit -m "ci: release tags to production" && git push && git tag -a v1.1.0 -m "Forecast 1.1.0" && git push origin v1.1.0', check: t => t.runsOf('you/forecast', 'release.yml').some(r => r.branch === 'v1.1.0' && r.status === 'waiting') },
+          { title: 'The release is waiting for you. Approve it in the GitHub tab (Actions → Review deployments → Approve and deploy)', solution: 'Click "Approve and deploy" in the GitHub tab', test: [{ act: H => H.approve('you/forecast'), label: 'Approve and deploy' }], check: t => t.deployment('you/forecast', 'production')?.version === 'v1.1.0' },
+          { title: 'Confirm production now reports v1.1.0', solution: 'curl https://forecast.example/health', check: t => t.deployment('you/forecast', 'production')?.version === 'v1.1.0' && after(t, e => e.type === 'deployment' && e.env === 'production', e => e.type === 'http' && /(\/\/|^)forecast\.example\/health/.test(e.url)) },
+        ],
+      },
+      quiz: [
+        { type: 'mc', q: 'What is the difference between continuous delivery and continuous deployment?', choices: ['There is none', 'Delivery keeps every change ready to release with a deliberate release step; deployment releases every passing change automatically', 'Delivery is for mobile apps only', 'Deployment means deploying to staging only'], answer: 1, explain: 'In continuous delivery a person or rule decides when; in continuous deployment the pipeline does.' },
+        { type: 'mc', q: 'Your deploy job has no `needs:`. What can happen?', choices: ['Nothing; jobs always run in file order', 'It runs in parallel with the tests and may deploy code whose tests fail', 'GitHub refuses the workflow', 'It never runs'], answer: 1, explain: 'Jobs run in parallel by default; needs: orders them and skips the deploy when tests fail.' },
+        { type: 'mc', q: 'The deploy step fails with "DEPLOY_TOKEN is not set", but the secret exists. Most likely cause?', choices: ['Secrets expire after a day', 'The step does not pass it: secrets must be mapped explicitly, e.g. env: DEPLOY_TOKEN: ${{ secrets.DEPLOY_TOKEN }}', 'Tokens only work on pull_request', 'The runner is out of disk'], answer: 1, explain: 'Secrets are only available where you pass them.' },
+        { type: 'multi', q: 'What can a protected GitHub environment enforce?', choices: ['Required reviewers who must approve a deployment', 'Which branches or tags may deploy to it', 'Environment-specific secrets', 'That the code has no bugs'], answer: [0, 1, 2], explain: 'Protection rules control who and what may deploy; they cannot prove correctness.' },
+        { type: 'mc', q: 'Which trigger runs a release workflow when you push v2.0.0?', choices: ['on: push: branches: [v*]', "on: push: tags: ['v*']", 'on: release_tag', 'on: pull_request: tags'], answer: 1, explain: 'Tag pushes are push events with a refs/tags/ ref.' },
+        { type: 'tf', q: '"Build once, deploy many" means the commit tested in the pipeline is the one deployed to staging and to production.', answer: true, explain: 'Rebuilding by hand for production deploys something nobody tested.' },
+        { type: 'type', q: 'Type the gh command that re-runs only the failed jobs of run 7.', accept: ['gh run rerun 7 --failed', 'gh run rerun --failed 7'], model: 'gh run rerun 7 --failed', explain: 'Useful after fixing a missing secret: no new commit needed.' },
+        { type: 'mc', q: 'What should a /health endpoint report so that deploys are easy to verify?', choices: ['The server\'s CPU model', 'The running version and commit', 'The list of users', 'The deploy token'], answer: 1, explain: 'Then "what is in production?" has a precise answer.' },
+        { type: 'mc', q: 'Which of these is one of the four DORA delivery metrics?', choices: ['Lines of code per day', 'Number of branches', 'Change failure rate', 'Test coverage percentage'], answer: 2, explain: 'Deployment frequency, lead time for changes, change failure rate, time to restore service.' },
+      ],
+    },
+    {
+      id: 'release-rollback',
+      title: 'Releases, rollbacks and safe deploys',
+      summary: 'Restore service first: roll back by redeploying a tag, revert the cause, add a smoke test, and ship a patch release.',
+      minutes: 22,
+      lab: {
+        cwd: '~/forecast',
+        panels: ['github', 'graph'],
+        setup(H) {
+          H.world.deployToken = 'dt_forecast_42';
+          H.world.siteRule = (files, { path }) => (path === '/' && /data\.hourly\.map\(/.test(files['app.js'] || '')) ? { status: 500, body: "500 Internal Server Error\nTypeError: Cannot read properties of undefined (reading 'map')\n    at renderHourly (app.js:9:22)" } : null;
+          H.remote('you', 'forecast', [
+            { message: 'Create Forecast app with CI', files: FORECAST_FILES },
+            { message: 'ci: deploy main to staging', files: { '.github/workflows/deploy.yml': DEPLOY_YML } },
+            { message: 'ci: release tags to production', files: { '.github/workflows/release.yml': RELEASE_YML } },
+          ], { authorName: 'You', authorEmail: 'you@example.com' });
+          H.bare('you/forecast').meta.runs.length = 0;
+          H.tagRemote('you/forecast', 'v1.1.0');
+          H.environment('you/forecast', 'staging', { url: 'https://staging.forecast.example' });
+          H.environment('you/forecast', 'production', { url: 'https://forecast.example', reviewers: ['you'], branches: [], tags: ['v*'] });
+          H.secret('you/forecast', 'DEPLOY_TOKEN', 'dt_forecast_42');
+          H.deploy('you/forecast', 'production', 'v1.1.0');
+          H.deploy('you/forecast', 'staging', 'main', { refType: 'branch' });
+          H.hours(20);
+          H.teammate('you/forecast', { message: 'feat: show the details panel (#13)', files: { 'details.js': 'export const details = d => `${d.wind} km/h, ${d.humidity}%`;\n' }, author: { name: 'Priya Sharma', email: 'priya@example.com' } });
+          const bad = H.teammate('you/forecast', { message: 'feat: hourly forecast (#14)', files: { 'app.js': APP_HOURLY }, author: { name: 'Jonas Weber', email: 'jonas@example.com' } });
+          H.teammate('you/forecast', { message: 'docs: describe the hourly view (#15)', files: { 'README.md': '# Forecast\n\nNow with an hourly view.\n' }, author: { name: 'Priya Sharma', email: 'priya@example.com' } });
+          H.world.labData = { bad };
+          H.run('git clone -q https://github.com/you/forecast.git');
+          H.cd('~/forecast');
+        },
+        suggestions: ['curl https://forecast.example/health', 'git log --oneline v1.1.0..main', 'gh run list'],
+        tasks: [
+          { title: 'Check which version production runs', solution: 'curl https://forecast.example/health', check: t => t.ran(/curl\b.*(\/\/|\s)forecast\.example\/health/) },
+          { title: 'List what will ship: the commits on main since v1.1.0', solution: 'git log --oneline v1.1.0..main', check: t => t.ran(/^git log\b.*v1\.1\.0\.\.(main|origin\/main|HEAD)?/) },
+          { title: 'Release it: tag main as v1.2.0 (annotated), push the tag and approve the production deployment', solution: 'git tag -a v1.2.0 -m "Forecast 1.2.0" && git push origin v1.2.0, then Approve and deploy in the GitHub tab', test: ['git tag -a v1.2.0 -m "Forecast 1.2.0" && git push origin v1.2.0', { act: H => H.approve('you/forecast'), label: 'Approve and deploy' }], check: t => t.deployment('you/forecast', 'production')?.version === 'v1.2.0' },
+          { title: 'Users report errors. Look at the production home page, with the status line', solution: 'curl -i https://forecast.example/', check: t => t.events('http').some(e => isProdRoot(e.url) && e.status === 500) },
+          { title: 'Restore service first: roll production back to v1.1.0 with gh workflow run, and approve it', hint: 'release.yml has a workflow_dispatch trigger, so you can run it on any ref: --ref v1.1.0.', solution: 'gh workflow run release.yml --ref v1.1.0, then Approve and deploy', test: ['gh workflow run release.yml --ref v1.1.0', { act: H => H.approve('you/forecast'), label: 'Approve and deploy' }], check: t => { const b = t.remote('you/forecast'); return t.deployment('you/forecast', 'production')?.version === 'v1.1.0' && b.meta.deployments.some(d => d.version === 'v1.2.0'); } },
+          { title: 'Confirm the home page works again', solution: 'curl -i https://forecast.example/', check: t => after(t, e => e.type === 'deployment' && e.env === 'production' && e.version === 'v1.1.0', e => e.type === 'http' && isProdRoot(e.url) && e.status === 200) },
+          { title: 'Now fix the cause calmly: revert the hourly forecast commit on main and push (staging redeploys)', hint: 'git log --oneline finds it; git revert --no-edit <id> undoes it with a new commit.', solution: 'git revert --no-edit <id> && git push', test: [t => `git revert --no-edit ${t.world.labData.bad.slice(0, 7)} && git push`], check: t => { const b = t.remote('you/forecast'); const head = b.refs['refs/heads/main']; const c = t.world.commit(head); return /^Revert/.test(c.message) && t.isAncestor(t.world.labData.bad, head) && t.deployment('you/forecast', 'staging')?.hash === head; } },
+          { title: 'Make the pipeline catch this next time: in deploy.yml, add a smoke test step after the staging deploy that runs curl -f https://staging.forecast.example/ , then push', hint: 'Add a new list item under the deploy-staging steps:  - name: Smoke test  /  run: curl -f https://staging.forecast.example/', solution: 'edit .github/workflows/deploy.yml && git commit -am "ci: smoke test staging after deploy" && git push', test: [{ cmd: 'edit .github/workflows/deploy.yml', edit: DEPLOY_SMOKE_YML }, 'git commit -am "ci: smoke test staging after deploy" && git push'], check: t => { const b = t.remote('you/forecast'); const head = b.refs['refs/heads/main']; const flat = t.world.readTreeFlat(t.world.commit(head).tree); const f = flat.get('.github/workflows/deploy.yml'); const txt = f && t.world.objects.get(f).content; return smokeOk(txt) && t.runsOf('you/forecast', 'deploy.yml').some(r => r.hash === head && r.conclusion === 'success'); } },
+          { title: 'Ship the fix as v1.2.1, approve it, and confirm the production home page works', solution: 'git tag -a v1.2.1 -m "Forecast 1.2.1" && git push origin v1.2.1, approve, then curl -i https://forecast.example/', test: ['git tag -a v1.2.1 -m "Forecast 1.2.1" && git push origin v1.2.1', { act: H => H.approve('you/forecast'), label: 'Approve and deploy' }, 'curl -i https://forecast.example/'], check: t => t.deployment('you/forecast', 'production')?.version === 'v1.2.1' && after(t, e => e.type === 'deployment' && e.env === 'production' && e.version === 'v1.2.1', e => e.type === 'http' && isProdRoot(e.url) && e.status === 200) },
+        ],
+      },
+      quiz: [
+        { type: 'order', q: 'Production is down after a release. Put the response in order.', items: ['Roll back to the last good release', 'Confirm users can use the site again', 'Find and revert the cause on main', 'Ship a new patch release through the pipeline', 'Write a blameless postmortem with one pipeline improvement'], explain: 'Restore service first; fix the cause calmly afterwards.' },
+        { type: 'mc', q: 'With tag-driven releases, what is a rollback?', choices: ['Force-pushing main to an older commit', 'Redeploying the previous known-good tag through the pipeline', 'Deleting the bad tag', 'Editing files on the production server'], answer: 1, explain: 'Nothing is rebuilt and nothing is typed by hand.' },
+        { type: 'mc', q: 'The v1.2.0 tag points at a bad commit. What should the fix be released as?', choices: ['Move the v1.2.0 tag to the fixed commit', 'A new version such as v1.2.1', 'Delete v1.2.0 and pretend it never happened', 'v1.1.0 again'], answer: 1, explain: 'Tags are permanent names for exact commits; never reuse them.' },
+        { type: 'tf', q: 'A /health endpoint that returns ok proves the main user journey works.', answer: false, explain: 'It only proves the process answers. Smoke tests exercise real pages.' },
+        { type: 'mc', q: 'What does `curl -f` add to a smoke-test step?', choices: ['It follows redirects', 'It exits with an error on HTTP 400 and above, so the job fails', 'It runs faster', 'It hides the output'], answer: 1, explain: 'Without -f, curl succeeds even when the server answers 500.' },
+        { type: 'multi', q: 'Which strategies reduce the impact of a bad release?', choices: ['Canary releases to a small share of users', 'Feature flags', 'Blue-green deployments', 'Bigger, rarer releases'], answer: [0, 1, 2], explain: 'Bigger releases make failures more likely and harder to diagnose.' },
+        { type: 'type', q: 'Type the gh command that runs release.yml on the tag v1.1.0.', accept: ['gh workflow run release.yml --ref v1.1.0', 'gh workflow run release.yml -r v1.1.0'], model: 'gh workflow run release.yml --ref v1.1.0', explain: 'The workflow needs a workflow_dispatch trigger.' },
+        { type: 'mc', q: 'Why can a rollback fail after a release that changed the database schema?', choices: ['Git cannot check out old tags', 'The old code may not work with the new schema', 'Rollbacks delete the database', 'Approvals expire'], answer: 1, explain: 'Make migrations backward compatible so both versions work.' },
+      ],
+    },
+    {
       id: 'automation-boss',
       title: 'Boss: Green builds only',
       summary: 'Add CI to a protected repository, get it green, ship a feature through the gate, and store a secret.',
@@ -170,6 +305,8 @@ export default {
         { type: 'multi', q: 'Which belong in a typical Node.js CI job?', choices: ['actions/checkout', 'npm ci', 'npm test', 'A hard-coded API key'], answer: [0, 1, 2], explain: 'Secrets come from ${{ secrets.* }}.' },
         { type: 'mc', q: 'Why run CI on pull_request and not only on push to main?', choices: ['It is cheaper', 'To catch failures before merging rather than after', 'GitHub requires it', 'To avoid reviews'], answer: 1, explain: 'Shift-left: find problems early.' },
         { type: 'tf', q: 'An approved PR with a red required check can still be merged by a normal developer.', answer: false, explain: 'Required checks block merging until green.' },
+        { type: 'mc', q: 'Staging should get every merge to main; production only version tags after approval. Which pair of triggers fits?', choices: ['Both on pull_request', "Staging: push branches [main]; production: push tags ['v*'] with a protected production environment", 'Both on push with no filters', 'Staging on schedule; production on issues'], answer: 1, explain: 'Branch filter for staging, tag filter plus environment protection for production.' },
+        { type: 'mc', q: 'A release broke production. What comes first?', choices: ['Find the guilty commit with bisect', 'Roll back to the last good release', 'Write the postmortem', 'Force-push main'], answer: 1, explain: 'Restore service, then fix the cause through the pipeline.' },
         { type: 'type', q: 'Type the gh command that stores DEPLOY_TOKEN with the value abc123 as a repository secret.', accept: ['gh secret set DEPLOY_TOKEN --body "abc123"', 'gh secret set DEPLOY_TOKEN --body abc123', 'gh secret set DEPLOY_TOKEN -b abc123', 'gh secret set DEPLOY_TOKEN -b "abc123"'], model: 'gh secret set DEPLOY_TOKEN --body "abc123"', explain: 'Workflows read it as ${{ secrets.DEPLOY_TOKEN }}.' },
       ],
     },

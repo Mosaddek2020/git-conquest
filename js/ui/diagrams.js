@@ -439,6 +439,28 @@ D['cherry-pick'] = () => {
   return figure(d, 'git cherry-pick copies the change a commit made and applies it where you are.');
 };
 
+D['cd-pipeline'] = () => {
+  const d = mk(720, 270, 'A delivery pipeline: merge to main deploys to staging, a version tag deploys to production after approval');
+  d.text(20, 34, 'Every merge to main', { anchor: 'start', weight: 700, font: 'display', size: 14 });
+  d.box(20, 50, 120, 56, 'push main', { sub: 'merged PR', color: 'main' });
+  d.box(180, 50, 120, 56, 'test', { sub: 'npm test', color: 'info' });
+  d.box(340, 50, 150, 56, 'deploy staging', { sub: 'automatic', color: 'feat' });
+  d.arrow(142, 78, 176, 78, { color: 'text' });
+  d.arrow(302, 78, 336, 78, { color: 'text' });
+  d.box(540, 50, 160, 56, 'staging', { sub: 'staging.app.example', color: 'feat', fill: 's2' });
+  d.arrow(492, 78, 536, 78, { color: 'feat' });
+  d.text(20, 154, 'Every version tag (v*)', { anchor: 'start', weight: 700, font: 'display', size: 14 });
+  d.box(20, 170, 120, 56, 'push v1.2.0', { sub: 'git tag', color: 'accent' });
+  d.box(180, 170, 120, 56, 'test', { sub: 'same commit', color: 'info' });
+  d.box(340, 170, 150, 56, 'approval', { sub: 'environment rule', color: 'warn', dash: '5 4' });
+  d.box(540, 170, 160, 56, 'production', { sub: 'app.example', color: 'ok', fill: 's2' });
+  d.arrow(142, 198, 176, 198, { color: 'text' });
+  d.arrow(302, 198, 336, 198, { color: 'text' });
+  d.arrow(492, 198, 536, 198, { color: 'ok' });
+  d.text(20, 256, 'Each arrow between jobs is a needs: dependency. Rollback = run the production pipeline again on an older tag.', { anchor: 'start', size: 12, color: 'muted' });
+  return figure(d, 'Continuous delivery: every change is proven and deployable; a person (or a rule) decides when it reaches production.');
+};
+
 export function renderDiagram(name) {
   const fn = D[name];
   if (!fn) return h('div', { class: 'figure' }, `Missing diagram: ${name}`);

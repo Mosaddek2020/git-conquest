@@ -292,6 +292,8 @@ export function remoteCommands({ parseOpts, needRepo, needWorkTree, mergeInto, c
               if (pr.state === 'open' && pr.headRepo === bare.meta.url && pr.head === dst) runWorkflows(w, target, 'pull_request', dst, commitHash, pr.number);
             }
           }
+        } else {
+          runWorkflows(w, bare, 'push', dst, commitHash, null, { refType: 'tag' });
         }
         w.emit({ type: 'push', remote, url: bare.meta.url, branch: dst, hash: commitHash, tag: isTag });
       });
@@ -302,7 +304,7 @@ export function remoteCommands({ parseOpts, needRepo, needWorkTree, mergeInto, c
         const t = r.slice(10);
         if (o['--follow-tags'] && w.objects.get(repo.refs[r]).type !== 'tag') continue;
         results.push(` * [new tag]         ${t} -> ${t}`);
-        toPush.push(() => { bare.refs[r] = repo.refs[r]; w.emit({ type: 'push', tag: true, name: t, url: bare.meta.url }); });
+        toPush.push(() => { bare.refs[r] = repo.refs[r]; runWorkflows(w, bare, 'push', t, w.peel(repo.refs[r]), null, { refType: 'tag' }); w.emit({ type: 'push', tag: true, name: t, url: bare.meta.url }); });
       }
     }
     const shown = results.filter(Boolean);
@@ -313,13 +315,14 @@ export function remoteCommands({ parseOpts, needRepo, needWorkTree, mergeInto, c
       const code = ctx.runHook(repo, 'pre-push', ctx);
       if (code !== 0) { ctx.out.push(`error: failed to push some refs to '${url}'`); return 1; }
     }
-    if (pushedCommits) ctx.out.push(`Enumerating objects: ${pushedCommits * 3}, done.`, `Counting objects: 100% (${pushedCommits * 3}/${pushedCommits * 3}), done.`, `Writing objects: 100% (${pushedCommits * 3}/${pushedCommits * 3}), done.`, `Total ${pushedCommits * 3} (delta 0), reused 0 (delta 0), pack-reused 0`);
+    const quiet = o['-q'] && !failed;
+    if (pushedCommits && !quiet) ctx.out.push(`Enumerating objects: ${pushedCommits * 3}, done.`, `Counting objects: 100% (${pushedCommits * 3}/${pushedCommits * 3}), done.`, `Writing objects: 100% (${pushedCommits * 3}/${pushedCommits * 3}), done.`, `Total ${pushedCommits * 3} (delta 0), reused 0 (delta 0), pack-reused 0`);
     for (const fn of toPush) fn();
-    for (const b of newBranches) {
+    for (const b of quiet ? [] : newBranches) {
       if (b === (bare.meta.defaultBranch || 'main')) continue;
       ctx.out.push('remote: ', `remote: Create a pull request for '${b}' on GitHub by visiting:`, `remote:      https://github.com/${bare.meta.owner}/${bare.meta.name}/pull/new/${b}`, 'remote: ');
     }
-    ctx.out.push(`To ${displayUrl(url)}`, ...shown.map(l => l.startsWith(' !') ? C.red(l) : l));
+    if (!quiet) ctx.out.push(`To ${displayUrl(url)}`, ...shown.map(l => l.startsWith(' !') ? C.red(l) : l));
     if (o['-u']) for (const s of specs) { const b = s.split(':')[0].replace(/^\+/, '').replace(/^HEAD$/, cur); if (repo.refs['refs/heads/' + b] && !shown.some(l => l.includes('rejected') && l.includes(b))) ctx.out.push(`branch '${b}' set up to track '${remote}/${s.includes(':') ? s.split(':')[1] : b}'.`); }
     if (failed) {
       ctx.out.push(C.red(`error: failed to push some refs to '${url}'`));

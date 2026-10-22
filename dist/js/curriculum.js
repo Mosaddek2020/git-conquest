@@ -29,7 +29,8 @@ function build(defs) {
         ...l,
         realmId: r.id,
         index: i,
-        lenses: t.lenses.map(x => ({ ...x, label: LENS_LABELS[x.kind] || x.kind })),
+        // a lens kind used twice in one lesson is labelled by its own title, so the nav stays unambiguous
+        lenses: t.lenses.map(x => ({ ...x, label: t.lenses.filter(y => y.kind === x.kind).length > 1 ? x.title : (LENS_LABELS[x.kind] || x.kind) })),
         labText: t.lab,
       };
       lesson.id = `${r.id}/${l.id}`;

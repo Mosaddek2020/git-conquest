@@ -4,7 +4,7 @@ A self-paced, mastery-based course that takes a new developer from zero to hero 
 
 Each lesson teaches one idea from several angles (a story, an analogy, the mental model, the commands, how real teams use it, traps and tips), then drills it in a **hands-on lab** inside a git simulator that runs in the browser, then asks the learner to **prove** it in a quiz. The next lesson unlocks only when the current one is mastered (lab done, 80% on the quiz). Experienced developers can test out of a realm with a 90% exam.
 
-- 13 realms, 70 lessons, 70 labs, 441 quiz questions
+- 13 realms, 72 lessons, 72 labs, 460 quiz questions
 - A real git engine in `js/git/`: actual SHA-1 object ids, index, merges and conflicts, rebase and `rebase -i`, cherry-pick, revert, stash, reflog, bisect, tags, worktrees, hooks, remotes, plus a simulated GitHub (forks, PRs, reviews, branch protection, issues, releases, Actions, secrets) and the `gh` CLI
 - A 3D world map (three.js) of the curriculum drawn as a commit graph, a sandbox, a searchable Field Guide, ranks, badges and a spaced-review deck
 

@@ -4,6 +4,7 @@
 import { GitError, C, shortHash, relativeTime } from './world.js';
 import { isAncestor, mergeBase, mergeTrees, revList, commitTreeFlat, ancestors } from './core.js';
 import { unifiedHunks } from './diff.js';
+import { parseWorkflow, simulateRun, runWorkflows, approveDeployment, rerun, runIcon, currentDeployment, ensureEnvironment } from './actions.js';
 
 export function protectionFor(bare, branch) {
   return bare.meta.protected?.[branch] || null;
@@ -21,7 +22,7 @@ export function teammateCommit(world, url, { branch = 'main', files = {}, remove
   const sig = { ...author, time: world.time };
   const h = world.writeCommit({ tree: world.writeTree(flat), parents: parent ? [parent] : [], message, author: sig, committer: sig });
   bare.refs['refs/heads/' + branch] = h;
-  runWorkflows(world, bare, 'push', branch, h);
+  runWorkflows(world, bare, 'push', branch, h, null, { actor: author.name });
   world.emit({ type: 'teammate-commit', url, branch, hash: h, message, author: author.name });
   return h;
 }
@@ -34,99 +35,9 @@ export function seedRemote(world, owner, name, commits, meta = {}) {
   return bare;
 }
 
-// ---------- Actions ----------
+// ---------- Actions (see actions.js) ----------
 
-export function parseWorkflow(text) {
-  const wf = { name: null, on: [], jobs: [] , errors: [] };
-  const lines = text.split('\n');
-  let section = null, job = null;
-  for (const raw of lines) {
-    if (!raw.trim() || raw.trim().startsWith('#')) continue;
-    const indent = raw.match(/^ */)[0].length;
-    const line = raw.trim();
-    if (indent === 0) {
-      const m = line.match(/^([\w-]+):\s*(.*)$/);
-      if (!m) { wf.errors.push(`could not parse: ${line}`); continue; }
-      section = m[1];
-      if (m[1] === 'name') wf.name = m[2].replace(/^["']|["']$/g, '');
-      if (m[1] === 'on') {
-        const v = m[2].replace(/[\[\]]/g, '');
-        if (v) wf.on.push(...v.split(',').map(s => s.trim()).filter(Boolean));
-      }
-      continue;
-    }
-    if (section === 'on') {
-      const m = line.match(/^([\w_]+):/) || line.match(/^- *([\w_]+)/);
-      if (m && indent <= 2) wf.on.push(m[1]);
-      continue;
-    }
-    if (section === 'jobs') {
-      if (indent === 2 && /^[\w-]+:\s*$/.test(line)) { job = { id: line.slice(0, -1), runsOn: null, steps: [] }; wf.jobs.push(job); continue; }
-      if (!job) continue;
-      let m;
-      if ((m = line.match(/^runs-on:\s*(.+)$/))) job.runsOn = m[1];
-      else if ((m = line.match(/^-?\s*name:\s*(.+)$/)) && line.startsWith('-')) job.steps.push({ name: m[1].replace(/^["']|["']$/g, '') });
-      else if ((m = line.match(/^-?\s*uses:\s*(.+)$/))) { if (line.startsWith('-') || !job.steps.length) job.steps.push({}); job.steps[job.steps.length - 1].uses = m[1]; }
-      else if ((m = line.match(/^-?\s*run:\s*(.+)$/))) { if (line.startsWith('-') || !job.steps.length) job.steps.push({}); job.steps[job.steps.length - 1].run = m[1]; }
-      else if ((m = line.match(/^name:\s*(.+)$/)) && job.steps.length) job.steps[job.steps.length - 1].name = m[1];
-    }
-  }
-  if (!wf.on.length) wf.errors.push("missing 'on:' trigger");
-  if (!wf.jobs.length) wf.errors.push("missing 'jobs:'");
-  for (const j of wf.jobs) {
-    if (!j.runsOn) wf.errors.push(`job '${j.id}' is missing 'runs-on'`);
-    if (!j.steps.length) wf.errors.push(`job '${j.id}' has no steps`);
-  }
-  return wf;
-}
-
-// Simulated script outcomes. `npm test` fails when any source file contains "BUG",
-// `npm run lint` fails on a leftover console.log.
-export function simulateRun(cmd, flat, world) {
-  const files = [...flat].map(([p, h]) => [p, world.objects.get(h).content]);
-  if (/npm (run )?test|npm t\b|pytest|go test|cargo test/.test(cmd) && world.testRule) {
-    const r = world.testRule(Object.fromEntries(files));
-    return r.ok ? { ok: true, log: r.log || ['PASS all suites'] } : { ok: false, log: r.log || ['FAIL'] };
-  }
-  if (/npm (run )?test|npm t\b|pytest|go test|cargo test/.test(cmd)) {
-    const bad = files.filter(([p, c]) => !p.startsWith('.github/') && /\bBUG\b/.test(c));
-    return bad.length ? { ok: false, log: [`FAIL ${bad[0][0]}`, `  ✕ found a BUG marker in ${bad[0][0]}`, `Tests: 1 failed, ${files.length} total`] } : { ok: true, log: [`PASS all suites`, `Tests: ${Math.max(1, files.length)} passed, ${Math.max(1, files.length)} total`] };
-  }
-  if (/lint/.test(cmd)) {
-    const bad = files.filter(([p, c]) => /\.(js|ts|jsx|tsx)$/.test(p) && /console\.log/.test(c));
-    return bad.length ? { ok: false, log: [`${bad[0][0]}`, `  error  Unexpected console statement  no-console`, `✖ 1 problem (1 error, 0 warnings)`] } : { ok: true, log: ['✔ no lint problems'] };
-  }
-  if (/build/.test(cmd)) return { ok: true, log: ['Build complete: dist/ (12 files)'] };
-  if (/^echo /.test(cmd)) return { ok: true, log: [cmd.slice(5).replace(/^["']|["']$/g, '')] };
-  return { ok: true, log: [`$ ${cmd}`, 'done'] };
-}
-
-export function runWorkflows(world, bare, event, branch, hash, pr = null) {
-  const flat = world.readTreeFlat(world.commit(hash).tree);
-  const wfs = [...flat.keys()].filter(p => /^\.github\/workflows\/[^/]+\.ya?ml$/.test(p));
-  for (const path of wfs) {
-    const wf = parseWorkflow(world.objects.get(flat.get(path)).content);
-    const triggered = wf.on.includes(event) || (event === 'push' && wf.on.includes('push')) || (event === 'pull_request' && wf.on.includes('pull_request'));
-    if (!triggered && !wf.errors.length) continue;
-    const run = { id: (bare.meta.runs.length + 1), workflow: wf.name || path.split('/').pop(), path, event, branch, hash, pr, jobs: [], status: 'completed', conclusion: 'success', time: world.time };
-    if (wf.errors.length) { run.conclusion = 'failure'; run.jobs.push({ id: 'workflow', ok: false, log: wf.errors.map(e => `Invalid workflow file: ${e}`) }); }
-    for (const j of wf.jobs) {
-      const job = { id: j.id, ok: true, log: [`Runner: ${j.runsOn || '?'}`] };
-      for (const s of j.steps) {
-        if (s.uses) job.log.push(`Run ${s.uses}`);
-        if (s.run) {
-          const r = simulateRun(s.run, flat, world);
-          job.log.push(`Run ${s.run}`, ...r.log.map(l => '  ' + l));
-          if (!r.ok) { job.ok = false; break; }
-        }
-      }
-      if (!job.ok) run.conclusion = 'failure';
-      run.jobs.push(job);
-    }
-    bare.meta.runs.unshift(run);
-    world.emit({ type: 'workflow-run', url: bare.meta.url, run });
-  }
-}
+export { parseWorkflow, simulateRun, runWorkflows };
 
 export function checksFor(bare, hash) {
   return bare.meta.runs.filter(r => r.hash === hash);
@@ -272,7 +183,7 @@ export function runGh(ctx, args, git) {
     out.push('Work seamlessly with GitHub from the command line.', '', 'USAGE', '  gh <command> <subcommand> [flags]', '', 'CORE COMMANDS',
       '  auth:        Authenticate gh and git with GitHub', '  browse:      Open repositories, issues, pull requests in the browser',
       '  issue:       Manage issues', '  pr:          Manage pull requests', '  release:     Manage releases', '  repo:        Manage repositories',
-      '  run:         View details about workflow runs', '  ssh-key:     Manage SSH keys');
+      '  run:         View details about workflow runs', '  secret:      Manage Actions secrets', '  ssh-key:     Manage SSH keys', '  workflow:    List and run workflows');
     return 0;
   }
   if (!w.github.authed && !(group === 'auth')) throw new GitError('To get started with GitHub CLI, please run:  gh auth login', 4);
@@ -487,13 +398,13 @@ export function runGh(ctx, args, git) {
       }
       if (sub === 'checks') {
         if (!st.checks.length) { out.push(`no checks reported on the '${pr.head}' branch`); return 1; }
-        for (const r of st.checks) for (const j of r.jobs) out.push(`${j.ok ? C.green('✓') : C.red('X')}  ${r.workflow} / ${j.id}  (${r.event})`);
+        for (const r of st.checks) for (const j of r.jobs) out.push(`${jobIcon(j)}  ${r.workflow} / ${j.id}  (${r.event})${j.conclusion === 'skipped' ? C.dim('  skipped') : ''}`);
         return st.checks.every(c => c.conclusion === 'success') ? 0 : 8;
       }
       out.push(C.bold(`${pr.title} #${pr.number}`));
       out.push(`${pr.state === 'open' ? C.green('Open') : pr.state === 'merged' ? C.magenta('Merged') : C.red('Closed')} • ${pr.author} wants to merge ${pl2(st.commits.length, 'commit')} into ${pr.base} from ${pr.headOwner === bare.meta.owner ? pr.head : pr.headOwner + ':' + pr.head}`);
       if (pr.reviews.length) out.push(`Reviews: ${pr.reviews.map(r => `${r.author} (${r.state.replace('_', ' ').toLowerCase()})`).join(', ')}`);
-      if (st.checks.length) out.push(`Checks: ${st.checks.map(c => `${c.conclusion === 'success' ? C.green('✓') : C.red('X')} ${c.workflow}`).join('  ')}`);
+      if (st.checks.length) out.push(`Checks: ${st.checks.map(c => `${statusIcon(c)} ${c.workflow}`).join('  ')}`);
       out.push('', pr.body || C.dim('No description provided'), '');
       if (pr.state === 'open') {
         if (st.conflicts.length) out.push(C.red(`This branch has conflicts that must be resolved: ${st.conflicts.join(', ')}`));
@@ -669,7 +580,7 @@ export function runGh(ctx, args, git) {
       if (!name) throw new GitError('secret name required', 1);
       if (!o['--body']) throw new GitError('no secret value provided: use --body', 1);
       if (!/^[A-Z_][A-Z0-9_]*$/i.test(name)) throw new GitError('secret names can only contain letters, numbers and _', 1);
-      bare.meta.secrets[name.toUpperCase()] = { updated: w.time };
+      bare.meta.secrets[name.toUpperCase()] = { updated: w.time, value: String(o['--body']) };
       out.push(`✓ Set Actions secret ${name.toUpperCase()} for ${bare.meta.owner}/${bare.meta.name}`);
       w.emit({ type: 'secret-set', name: name.toUpperCase() });
       return 0;
@@ -685,17 +596,69 @@ export function runGh(ctx, args, git) {
 
   if (group === 'run') {
     const { bare } = contextRepo(ctx, { upstreamFirst: false });
-    if (sub === 'list') {
-      if (!bare.meta.runs.length) { out.push('no runs found'); return 0; }
-      for (const r of bare.meta.runs.slice(0, 10)) out.push(`${r.conclusion === 'success' ? C.green('✓') : C.red('X')}  ${r.workflow.padEnd(14)} ${r.event.padEnd(13)} ${r.branch.padEnd(14)} ${shortHash(r.hash)}  #${r.id}`);
+    const findRun = (args) => { const id = args.find(x => /^\d+$/.test(x)); const r = id ? bare.meta.runs.find(x => x.id === Number(id)) : bare.meta.runs[0]; if (!r) throw new GitError(id ? `could not find any workflow run with ID ${id}` : 'no runs found', 1); return r; };
+    if (sub === 'list' || sub === 'ls') {
+      const o = ghOpts(rest, { val: ['--workflow', '-w', '--branch', '-b', '--limit', '-L'], alias: { '-w': '--workflow', '-b': '--branch', '-L': '--limit' } });
+      let runs = bare.meta.runs;
+      if (o['--workflow']) runs = runs.filter(r => r.file === o['--workflow'] || r.workflow === o['--workflow']);
+      if (o['--branch']) runs = runs.filter(r => r.branch === o['--branch']);
+      if (!runs.length) { out.push('no runs found'); return 0; }
+      out.push(C.dim(`${'STATUS'.padEnd(12)}${'WORKFLOW'.padEnd(16)}${'EVENT'.padEnd(19)}${'REF'.padEnd(16)}COMMIT   ID`));
+      for (const r of runs.slice(0, Number(o['--limit']) || 10)) out.push(`${statusIcon(r)}  ${statusWord(r).padEnd(9)}${r.workflow.padEnd(16)}${r.event.padEnd(19)}${r.branch.padEnd(16)}${shortHash(r.hash)}  #${r.id}`);
       return 0;
     }
-    if (sub === 'view') {
-      const id = rest.find(a => /^\d+$/.test(a));
-      const r = id ? bare.meta.runs.find(x => x.id === Number(id)) : bare.meta.runs[0];
-      if (!r) throw new GitError('run not found', 1);
-      out.push(`${r.conclusion === 'success' ? C.green('✓') : C.red('X')} ${r.branch} ${r.workflow} · #${r.id}`, `Triggered via ${r.event}`, '');
-      for (const j of r.jobs) { out.push(C.bold(`${j.ok ? C.green('✓') : C.red('X')} ${j.id}`)); for (const l of j.log) out.push('  ' + l); }
+    if (sub === 'view' || sub === 'watch') {
+      const r = findRun(rest);
+      if (sub === 'watch' && r.status === 'completed') out.push(C.dim(`Run ${r.workflow} (#${r.id}) has already completed with '${r.conclusion}'`), '');
+      out.push(`${statusIcon(r)} ${r.branch} ${r.workflow} · #${r.id}${r.attempt > 1 ? ` (attempt ${r.attempt})` : ''}`, `Triggered via ${r.event} by ${r.actor || 'you'}`, '');
+      out.push(C.bold('JOBS'));
+      for (const j of r.jobs) {
+        out.push(`${jobIcon(j)} ${j.id}${j.envName ? C.dim(` (environment: ${j.envName})`) : ''}${j.conclusion === 'skipped' ? C.dim(' skipped') : j.status === 'waiting' ? C.yellow(' waiting for approval') : j.status === 'queued' ? C.dim(' pending') : ''}`);
+        for (const l of j.log) out.push('  ' + l);
+      }
+      if (r.status === 'waiting') out.push('', C.yellow('This run is waiting for a deployment review.'), C.dim('Approve or reject it under "Review deployments" on the run page (the GitHub tab on the right).'));
+      else if (r.conclusion === 'failure') out.push('', C.dim(`To re-run the failed jobs: gh run rerun ${r.id} --failed`));
+      return r.conclusion === 'failure' && sub === 'watch' && rest.includes('--exit-status') ? 1 : 0;
+    }
+    if (sub === 'rerun') {
+      const r = findRun(rest);
+      if (r.status !== 'completed') throw new GitError(`run ${r.id} cannot be rerun; it is still ${r.status}`, 1);
+      try { rerun(w, bare, r, { failedOnly: rest.includes('--failed') }); } catch (e) { throw new GitError(e.message, 1); }
+      out.push(`${C.green('✓')} Requested rerun${rest.includes('--failed') ? ' (failed jobs)' : ''} of run ${r.id}`);
+      out.push(r.status === 'waiting' ? C.yellow(`  → run #${r.id} is waiting for a deployment review`) : `  → run #${r.id} ${r.conclusion === 'success' ? C.green('succeeded') : C.red('failed')}`);
+      return 0;
+    }
+  }
+
+  if (group === 'workflow') {
+    const { bare } = contextRepo(ctx, { upstreamFirst: false });
+    const def = bare.meta.defaultBranch || 'main';
+    const listAt = (hash) => { const flat = w.readTreeFlat(w.commit(hash).tree); return [...flat.keys()].filter(p => /^\.github\/workflows\/[^/]+\.ya?ml$/.test(p)).map(p => ({ path: p, file: p.split('/').pop(), wf: parseWorkflow(w.objects.get(flat.get(p)).content) })); };
+    const defHead = bare.refs['refs/heads/' + def];
+    if (sub === 'list' || sub === 'ls') {
+      const list = defHead ? listAt(defHead) : [];
+      if (!list.length) { out.push('no workflows found'); return 0; }
+      for (const x of list) out.push(`${(x.wf.name || x.file).padEnd(18)} active  ${x.file}`);
+      return 0;
+    }
+    if (sub === 'run') {
+      const o = ghOpts(rest, { val: ['--ref', '-r', '-f', '--field', '-F', '--raw-field'], alias: { '-r': '--ref', '--field': '-f', '-F': '-f', '--raw-field': '-f' } });
+      const name = o._[0];
+      if (!name) throw new GitError('workflow name, ID, or filename required', 1);
+      const ref = o['--ref'] || def;
+      const isTag = !!bare.refs['refs/tags/' + ref] && !bare.refs['refs/heads/' + ref];
+      const raw = isTag ? bare.refs['refs/tags/' + ref] : bare.refs['refs/heads/' + ref];
+      if (!raw) throw new GitError(`could not create workflow dispatch event: HTTP 422: No ref found for: ${ref}`, 1);
+      const hash = w.peel(raw);
+      const x = listAt(hash).find(y => y.file === name || y.wf.name === name);
+      if (!x) throw new GitError(`could not find any workflows named ${name}`, 1);
+      if (!('workflow_dispatch' in x.wf.triggers)) throw new GitError(`could not create workflow dispatch event: HTTP 422: Workflow does not have 'workflow_dispatch' trigger`, 1);
+      const inputs = {};
+      if (o['-f']) { const [k, ...v] = String(o['-f']).split('='); inputs[k] = v.join('='); }
+      w.tick(2);
+      const [r] = runWorkflows(w, bare, 'workflow_dispatch', ref, hash, null, { refType: isTag ? 'tag' : 'branch', only: x.path, inputs });
+      out.push(`${C.green('✓')} Created workflow_dispatch event for ${x.file} at ${ref}`, '', `To see runs for this workflow, try: gh run list --workflow=${x.file}`);
+      if (r) out.push(r.status === 'waiting' ? C.yellow(`  → run #${r.id} is waiting for a deployment review`) : `  → run #${r.id} ${r.conclusion === 'success' ? C.green('succeeded') : C.red('failed')}`);
       return 0;
     }
   }
@@ -708,6 +671,15 @@ export function runGh(ctx, args, git) {
 
   throw new GitError(`unknown command "${[group, sub].filter(Boolean).join(' ')}" for "gh"\n\nRun 'gh --help' for usage.`, 1);
 }
+
+function statusIcon(r) {
+  const k = runIcon(r);
+  return k === 'success' ? C.green('✓') : k === 'failure' ? C.red('X') : k === 'waiting' ? C.yellow('◷') : C.yellow('*');
+}
+function statusWord(r) { const k = runIcon(r); return k === 'success' ? 'pass' : k === 'failure' ? 'fail' : k; }
+function jobIcon(j) { return j.conclusion === 'success' ? C.green('✓') : j.conclusion === 'failure' ? C.red('X') : j.conclusion === 'skipped' ? C.dim('-') : j.status === 'waiting' ? C.yellow('◷') : C.dim('*'); }
+
+export { approveDeployment, currentDeployment, ensureEnvironment };
 
 function pl2(n, w) { return `${n} ${w}${n === 1 ? '' : 's'}`; }
 

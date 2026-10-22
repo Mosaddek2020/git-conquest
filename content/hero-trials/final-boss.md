@@ -23,7 +23,7 @@ You started at Base Camp not knowing what a commit was. Look at what you can do 
 - **Branch and merge** confidently, resolve conflicts calmly, **rebase** and polish private history, **cherry-pick** fixes.
 - **Collaborate**: remotes, fetch, pull, push, divergence, force-with-lease, forks and upstream.
 - **Work on GitHub**: issues, pull requests, reviews, protected branches, CODEOWNERS, releases.
-- **Automate**: Actions, required checks, secrets, Dependabot.
+- **Automate**: Actions, required checks, secrets, Dependabot, deploy pipelines with approvals, and rollbacks.
 - **Wield power tools**: bisect, blame, hooks, aliases, worktrees, and the object model underneath it all.
 - **Rescue** any situation by asking two questions: is it committed, and is it shared?
 

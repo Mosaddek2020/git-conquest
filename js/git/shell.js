@@ -4,6 +4,7 @@
 import { GitError, C, normPath, dirname, basename, stripAnsi, shortHash } from './world.js';
 import { runGit, levenshtein } from './git.js';
 import { runGh, simulateRun } from './github.js';
+import { httpGet } from './actions.js';
 import { currentBranch, headCommit, computeStatus, worktree, headRef } from './core.js';
 import { splitLines } from './diff.js';
 
@@ -782,6 +783,20 @@ const builtins = {
     const r = simulateRun(`npm ${args.join(' ')}`, flat, this.world);
     out.push(`> ${script}`, ...r.log.map(l => (r.ok ? l : C.red(l))));
     return r.ok ? 0 : 1;
+  },
+  curl(args, out) {
+    const url = args.find(a => !a.startsWith('-'));
+    if (!url) { out.push('curl: try \'curl --help\' for more information'); return 2; }
+    const flags = args.filter(a => a.startsWith('-')).join(' ');
+    const fail = /(^|\s)-[a-zA-Z]*f|--fail/.test(flags), head = /(^|\s)-[a-zA-Z]*I\b|--head/.test(flags), incl = /(^|\s)-[a-zA-Z]*i\b|--include/.test(flags);
+    const r = httpGet(this.world, url);
+    this.world.emit({ type: 'http', url, status: r?.status ?? null });
+    if (!r) { out.push(`curl: (6) Could not resolve host: ${url.replace(/^https?:\/\//, '').split('/')[0]}`); return 6; }
+    const reason = { 200: 'OK', 404: 'Not Found', 500: 'Internal Server Error', 502: 'Bad Gateway', 503: 'Service Unavailable' }[r.status] || '';
+    if (head || incl) out.push(`HTTP/2 ${r.status} ${reason}`.trim(), `content-type: ${/^[{[]/.test(r.body) ? 'application/json' : 'text/html'}`, '');
+    if (fail && r.status >= 400) { out.push(`curl: (22) The requested URL returned error: ${r.status}`); return 22; }
+    if (!head) out.push(...String(r.body).split('\n'));
+    return 0;
   },
   node(args, out) { out.push(C.dim('(node is not available in the simulator)')); return 0; },
   open(args, out) { out.push(C.dim('(the simulator cannot open a browser; use the panels on the right)')); return 0; },

@@ -1342,7 +1342,7 @@ export function mergeInto(ctx, theirsRev, { noFF = false, ffOnly = false, squash
   const msg = message || `Merge ${mergeLabel(repo, theirsRev)}${cur && cur !== 'main' && cur !== 'master' ? ` into ${cur}` : ''}`;
   for (const p of touched) if (oursFlat.get(p) && theirsFlat.get(p) && oursFlat.get(p) !== baseFlat.get(p) && !merge.conflicts.find(c => c.path === p)) ctx.out.push(`Auto-merging ${p}`);
   if (merge.conflicts.length) {
-    ctx.out.push(...conflictLines(merge));
+    ctx.out.push(...conflictLines(merge, name));
     if (squash) { ctx.out.push('Squash commit -- not updating HEAD', 'Automatic merge failed; fix conflicts and then commit the result.'); repo.state = { type: 'squash-merge', msg }; repo.state = null; return 1; }
     repo.state = { type: 'merge', mergeHead: theirs, msg, conflicted: merge.conflicts.map(c => c.path) };
     ctx.out.push('Automatic merge failed; fix conflicts and then commit the result.');

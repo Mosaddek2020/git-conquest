@@ -8,7 +8,8 @@ import { GraphView } from './ui/graph.js';
 import { AreasView, FilesView, GitHubView } from './ui/panels.js';
 import { World, normPath, stripAnsi } from './git/world.js';
 import { Shell } from './git/shell.js';
-import { seedRemote, teammateCommit, reviewPR, createPR, mergePR } from './git/github.js';
+import { seedRemote, teammateCommit, reviewPR, createPR, mergePR, approveDeployment, currentDeployment, ensureEnvironment } from './git/github.js';
+import { deployTo } from './git/actions.js';
 import { computeStatus, headCommit, currentBranch, revList, resolve, isAncestor, branchNames, commitTreeFlat } from './git/core.js';
 
 export function makeHelpers(world, shell) {
@@ -68,6 +69,26 @@ export function makeHelpers(world, shell) {
       const bare = world.remotes.get(full);
       return createPR(world, bare, { headRepo: full, ...opts });
     },
+    bare(url) { return world.remotes.get(url.startsWith('https://') ? url : `https://github.com/${url}.git`); },
+    environment(url, name, { url: envUrl = null, reviewers = [], branches = null, tags = null } = {}) {
+      const e = ensureEnvironment(H.bare(url), name, envUrl);
+      Object.assign(e, { reviewers, branches, tags });
+      return e;
+    },
+    secret(url, name, value) { const b = H.bare(url); b.meta.secrets = b.meta.secrets || {}; b.meta.secrets[name] = { updated: world.time, value }; },
+    tagRemote(url, tag, branch = 'main') { const b = H.bare(url); b.refs['refs/tags/' + tag] = b.refs['refs/heads/' + branch]; return b.refs['refs/tags/' + tag]; },
+    deploy(url, env, ref, { refType = 'tag', by = 'Ada Okafor' } = {}) {
+      const b = H.bare(url);
+      const hash = world.peel(b.refs[(refType === 'tag' ? 'refs/tags/' : 'refs/heads/') + ref]);
+      return deployTo(world, b, env, { hash, ref, refType, by });
+    },
+    // what clicking "Approve and deploy" in the GitHub tab does
+    approve(url, { approve = true } = {}) {
+      const b = H.bare(url);
+      const run = b.meta.runs.find(r => r.status === 'waiting');
+      if (!run) return null;
+      return approveDeployment(world, b, run.id, { by: world.github.user, approve });
+    },
   };
   return H;
 }
@@ -115,6 +136,8 @@ export function makeCheckApi(world, shell, history) {
     events(type) { return world.events.filter(e => e.type === type); },
     state(repo = shell.repo) { return repo?.state?.type || null; },
     hasConflicts(repo = shell.repo) { return !!repo && repo.conflicts.size > 0; },
+    deployment(ownerName, env) { const b = api.remote(ownerName); return b ? currentDeployment(b, env) : null; },
+    runsOf(ownerName, file) { const b = api.remote(ownerName); return b ? b.meta.runs.filter(r => !file || r.file === file) : []; },
     noMarkers(path) { const c = api.file(path); return c !== undefined && !/^(<<<<<<<|=======|>>>>>>>)/m.test(c); },
   };
   return api;

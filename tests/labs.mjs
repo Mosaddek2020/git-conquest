@@ -33,6 +33,7 @@ for (const realm of realms) {
       try { early = !!t.check(api); } catch { early = false; }
       if (early && !t.allowEarly) { console.log(`! ${id} task ${i + 1} passes before its steps run: ${t.title}`); warnings++; }
       for (const step of steps) {
+        if (step && step.act) { step.act(H, api); log.push(`[${step.label || 'action'}]`); continue; }
         const s = typeof step === 'string' ? { cmd: step } : typeof step === 'function' ? { cmd: step(api) } : step;
         const edits = s.edits ? [...s.edits] : (s.edit !== undefined ? [s.edit] : []);
         let r = shell.run(s.cmd);

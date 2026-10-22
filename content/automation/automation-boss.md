@@ -25,5 +25,7 @@ In this repository, `npm run lint` fails on any `console.log` in a `.js` file, a
 - **Secrets** live in Actions secrets and environment variables, never in code. A leaked secret must be **rotated**.
 - **Dependabot**, **secret scanning** and **push protection** help keep dependencies and credentials safe.
 - **GitHub Pages** hosts static sites from a repository.
+- **Continuous delivery**: `needs:` orders jobs, `environment:` ties a job to staging or a protected production, branch filters deploy `main` to staging and `v*` tags to production after approval.
+- **Rollbacks** redeploy the last good tag (`gh workflow run release.yml --ref v1.1.0`); then revert the cause, add a smoke test, and ship a patch release.
 
 ## lab | Bring CI to sparrow/api

@@ -3,7 +3,7 @@
 import { h, clear } from './dom.js';
 import { computeStatus, headCommit, worktree, branchNames, currentBranch, revList } from '../git/core.js';
 import { shortHash, relativeTime, stripAnsi } from '../git/world.js';
-import { prStatus, mergePR, checksFor } from '../git/github.js';
+import { prStatus, mergePR, checksFor, approveDeployment, currentDeployment } from '../git/github.js';
 import { GraphView } from './graph.js';
 
 export class AreasView {
@@ -145,12 +145,35 @@ export class GitHubView {
           h('span', { class: 'pill ' + (i.state === 'open' ? 'pill-ok' : '') }, i.state === 'open' ? 'Open' : i.closedBy ? `Closed by #${i.closedBy}` : 'Closed')),
           i.labels.length ? h('span', { class: 'meta' }, i.labels.join(', ')) : null)))));
     }
+    // environments
+    const envs = Object.values(meta.environments || {});
+    if (envs.length) {
+      this.el.append(h('section', { class: 'gh-section' }, h('h5', {}, 'Environments'),
+        h('ul', { class: 'gh-list' }, envs.map(e => {
+          const d = currentDeployment(bare, e.name);
+          return h('li', {}, h('div', { class: 'row' },
+            h('span', {}, h('strong', {}, e.name), e.reviewers?.length ? h('span', { class: 'pill pill-warn', style: { marginLeft: '6px' } }, 'requires approval') : null),
+            h('span', { class: 'meta mono' }, d ? d.version : 'nothing deployed')),
+            h('span', { class: 'meta' }, [e.url || 'no URL', d ? ` · deployed ${relativeTime(d.time, w.time)}${d.by ? ' by ' + d.by : ''}` : ''].join('')));
+        }))));
+    }
     // actions
     if (meta.runs.length) {
+      const icon = r => r.status === 'waiting' ? ['◷ ', 'var(--warn)'] : r.conclusion === 'success' ? ['✓ ', 'var(--ok)'] : ['✗ ', 'var(--bad)'];
       this.el.append(h('section', { class: 'gh-section' }, h('h5', {}, 'Actions'),
-        h('ul', { class: 'gh-list' }, meta.runs.slice(0, 6).map(r => h('li', {},
-          h('div', { class: 'row' }, h('span', {}, h('strong', { style: { color: r.conclusion === 'success' ? 'var(--ok)' : 'var(--bad)' } }, r.conclusion === 'success' ? '✓ ' : '✗ '), `${r.workflow} · ${r.event}`), h('span', { class: 'meta mono' }, `${r.branch} ${shortHash(r.hash)}`)),
-          r.conclusion !== 'success' ? h('span', { class: 'meta' }, r.jobs.flatMap(j => j.log).filter(l => /FAIL|error|✕|Invalid/.test(l)).slice(0, 2).join(' · ')) : null)))));
+        h('ul', { class: 'gh-list' }, meta.runs.slice(0, 6).map(r => {
+          const [ic, col] = icon(r);
+          const waiting = r.jobs.filter(j => j.status === 'waiting');
+          return h('li', {},
+            h('div', { class: 'row' }, h('span', {}, h('strong', { style: { color: col } }, ic), `${r.workflow} · ${r.event} #${r.id}`), h('span', { class: 'meta mono' }, `${r.branch} ${shortHash(r.hash)}`)),
+            h('span', { class: 'meta' }, r.jobs.map(j => `${j.conclusion === 'success' ? '✓' : j.conclusion === 'failure' ? '✗' : j.conclusion === 'skipped' ? '–' : j.status === 'waiting' ? '◷' : '·'} ${j.id}`).join('  ')),
+            r.conclusion === 'failure' ? h('span', { class: 'meta' }, r.jobs.flatMap(j => j.log).filter(l => /FAIL|error|✕|Invalid|not set|rejected|not allowed/i.test(l)).slice(0, 2).join(' · ')) : null,
+            waiting.length ? h('div', { class: 'gh-review' },
+              h('span', {}, `Review deployments: ${waiting.map(j => j.envName).join(', ')} is waiting for approval`),
+              h('div', { style: { display: 'flex', gap: '6px' } },
+                h('button', { class: 'btn btn-sm btn-primary', type: 'button', onclick: () => this.review(w, bare, r, true) }, 'Approve and deploy'),
+                h('button', { class: 'btn btn-sm', type: 'button', onclick: () => this.review(w, bare, r, false) }, 'Reject'))) : null);
+        }))));
     }
     if (meta.releases.length) {
       this.el.append(h('section', { class: 'gh-section' }, h('h5', {}, 'Releases'),
@@ -161,6 +184,14 @@ export class GitHubView {
     this.graph.render(bare);
     gs.append(this.graph.el);
     this.el.append(gs);
+  }
+
+  review(w, bare, run, approve) {
+    try {
+      approveDeployment(w, bare, run.id, { by: w.github.user, approve });
+      const envs = run.jobs.filter(j => j.envName).map(j => j.envName).join(', ');
+      this.onAction?.(approve ? `Approved deployment to ${envs} (run #${run.id} → ${run.status === 'waiting' ? 'waiting' : run.conclusion})` : `Rejected deployment to ${envs} (run #${run.id})`, !approve || run.conclusion === 'failure');
+    } catch (e) { this.onAction?.(e.message, true); }
   }
 
   prItem(w, bare, pr, repo, shell) {
