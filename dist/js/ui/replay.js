@@ -38,7 +38,7 @@ function expand(seg, world, shell) {
     return { cmd: `echo "${m[1]}" >> ${file} && git add -A && git commit -q -m "${m[1]}"`, shown: `git add ${file} && git commit -m "${m[1]}"` };
   }
   if ((m = seg.match(/^github\s+(\S+)\/(\S+)$/))) {
-    seedRemote(world, m[1], m[2], [{ message: 'Initial commit', files: { 'README.md': `# ${m[2]}\n` } }]);
+    seedRemote(world, m[1], m[2], [{ message: 'Initial commit', files: { 'README.md': `# ${m[2]}\n` } }], { collaborators: ['you'] });
     return { cmd: '', shown: `(on GitHub: ${m[1]}/${m[2]} exists with one commit)` };
   }
   if ((m = seg.match(/^teammate\s+(\S+)\s+"([^"]+)"(?:\s+(\S+))?$/))) {

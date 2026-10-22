@@ -77,21 +77,22 @@ D['vcs-chaos'] = () => {
 };
 
 D['three-areas'] = () => {
-  const d = mk(720, 270, 'The three areas of git: working directory, staging area, repository');
+  const d = mk(720, 300, 'The three areas of git: working directory, staging area, repository');
   d.box(20, 60, 200, 110, 'Working directory', { sub: 'the files you edit\nin your editor', color: 'feat' });
   d.box(260, 60, 200, 110, 'Staging area', { sub: 'the next commit,\nbeing assembled', color: 'warn' });
   d.box(500, 60, 200, 110, 'Repository', { sub: 'committed snapshots\nin .git', color: 'main' });
-  d.arrow(222, 92, 256, 92, { color: 'ok', label: 'git add', dy: -10, lx: 239, ly: 50 });
-  d.arrow(462, 92, 496, 92, { color: 'main', label: 'git commit', lx: 479, ly: 50 });
+  d.arrow(222, 92, 256, 92, { color: 'ok', label: 'git add', lx: 239, ly: 48 });
+  d.arrow(462, 92, 496, 92, { color: 'main', label: 'git commit', lx: 479, ly: 48 });
   d.arrow(256, 140, 222, 140, { color: 'muted', dash: '4 3' });
   d.arrow(496, 140, 462, 140, { color: 'muted', dash: '4 3' });
-  d.text(239, 206, 'git restore --staged <file>', { font: 'mono', size: 11.5, color: 'muted' });
-  d.text(239, 222, '(unstage, keep the edit)', { size: 11.5, color: 'muted' });
-  d.text(600, 206, 'git restore <file>', { font: 'mono', size: 11.5, color: 'muted' });
-  d.text(600, 222, '(throw the edit away)', { size: 11.5, color: 'muted' });
-  d.path('M600 172 Q600 250 120 250 L120 174', { color: 'muted', width: 1.4, dash: '4 3' });
-  d.text(360, 264, 'git switch / git checkout rewrites the working directory from the repository', { size: 11.5, color: 'muted' });
-  return figure(d, 'Edits start in the working directory. git add copies them into the staging area. git commit turns the staging area into a permanent snapshot.');
+  d.text(239, 196, 'git restore <file>', { font: 'mono', size: 11.5, color: 'muted' });
+  d.text(239, 212, '(throw the edit away)', { size: 11.5, color: 'muted' });
+  d.text(479, 196, 'git restore --staged <file>', { font: 'mono', size: 11.5, color: 'muted' });
+  d.text(479, 212, '(unstage, keep the edit)', { size: 11.5, color: 'muted' });
+  d.path('M600 172 L600 252 L120 252 L120 176', { color: 'muted', width: 1.4, dash: '4 3' });
+  d.root.append(svg('path', { d: 'M115 182 L120 172 L125 182', fill: 'none', stroke: T.muted, 'stroke-width': 1.4 }));
+  d.text(360, 276, 'git switch / git checkout rewrite the working directory from a commit', { size: 11.5, color: 'muted' });
+  return figure(d, 'Edits start in the working directory. git add copies them into the staging area. git commit turns the staging area into a permanent snapshot. The dashed arrows go the other way.');
 };
 
 D['snapshots'] = () => {

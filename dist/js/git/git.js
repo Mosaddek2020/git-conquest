@@ -478,7 +478,7 @@ commands.rm = (ctx, args) => {
   const specs = [...o._, ...(o.paths || [])];
   if (!specs.length) throw new GitError('usage: git rm [<options>] [--] <file>...', 129);
   const match = specMatcher(ctx, specs);
-  const hits = [...repo.index.keys()].filter(match);
+  const hits = [...new Set([...repo.index.keys(), ...repo.conflicts.keys()])].filter(match);
   if (!hits.length) throw new GitError(`fatal: pathspec '${specs[0]}' did not match any files`);
   for (const s of specs) {
     const rel = relPath(ctx, s);
@@ -489,6 +489,7 @@ commands.rm = (ctx, args) => {
   const head = headTreeFlat(repo);
   if (!o['--cached'] && !o['-f'] && !o['--force'] && !o['-rf']) {
     const dirty = hits.filter(p => {
+      if (repo.conflicts.has(p)) return false;
       const work = readWork(repo, p);
       return repo.index.get(p) !== head.get(p) || (work !== undefined && ctx.world.blobHash(work) !== repo.index.get(p));
     });
@@ -497,6 +498,7 @@ commands.rm = (ctx, args) => {
   for (const p of hits) {
     ctx.out.push(`rm '${p}'`);
     repo.index.delete(p);
+    repo.conflicts.delete(p);
     if (!o['--cached']) removeWork(repo, p);
   }
   ctx.world.pruneEmptyDirs(repo.root);
@@ -684,6 +686,8 @@ commands.log = (ctx, args) => {
   if (o['--merges']) list = list.filter(h => w.commit(h).parents.length > 1);
   if (o['--author']) { const re = new RegExp(o['--author'], 'i'); list = list.filter(h => re.test(`${w.commit(h).author.name} <${w.commit(h).author.email}>`)); }
   if (o['--grep']) { const re = new RegExp(o['--grep'], 'i'); list = list.filter(h => re.test(w.commit(h).message)); }
+  if (o['--since']) { const t = parseWhen(o['--since'], w.time); if (t !== null) list = list.filter(h => w.commit(h).committer.time >= t); }
+  if (o['--until']) { const t = parseWhen(o['--until'], w.time); if (t !== null) list = list.filter(h => w.commit(h).committer.time <= t); }
   if (o['-S']) {
     const needle = o['-S'];
     const count = (h) => { let n = 0; for (const [, b] of commitTreeFlat(repo, h)) n += w.objects.get(b).content.split(needle).length - 1; return n; };
@@ -748,6 +752,17 @@ commands.log = (ctx, args) => {
   ctx.out.push(...lines);
   return 0;
 };
+
+export function parseWhen(s, now) {
+  s = String(s).trim().toLowerCase();
+  if (s === 'yesterday') return now - 86400;
+  if (s === 'today' || s === 'now') return now - (now % 86400);
+  if (/^\d{4}-\d{2}-\d{2}/.test(s)) { const t = Date.parse(s.length === 10 ? s + 'T23:59:59Z' : s); return Number.isNaN(t) ? null : Math.floor(t / 1000); }
+  const m = s.match(/^(\d+)[\s.]*(second|minute|hour|day|week|month|year)s?(\s+ago)?$/);
+  if (!m) return null;
+  const unit = { second: 1, minute: 60, hour: 3600, day: 86400, week: 604800, month: 2592000, year: 31536000 }[m[2]];
+  return now - Number(m[1]) * unit;
+}
 
 function relPathSafe(ctx, a) {
   try { return relPath(ctx, a); } catch { return '\u0000'; }
@@ -1103,7 +1118,7 @@ function switchCore(ctx, target, { create = null, force = false, detach = false,
   }
   // guess remote branch
   if (!detach && verb !== 'checkout-detach') {
-    const remoteRefs = Object.keys(repo.refs).filter(r => r.startsWith('refs/remotes/') && r.endsWith('/' + target) && r.split('/').length === 4);
+    const remoteRefs = remoteMatches(repo.refs, target);
     if (remoteRefs.length === 1) return switchCore(ctx, null, { create: target, startPoint: remoteRefs[0].slice(13), force });
   }
   const h = resolve(repo, target, { quiet: true });
@@ -1134,7 +1149,8 @@ function switchCore(ctx, target, { create = null, force = false, detach = false,
 
 commands.switch = (ctx, args) => {
   const repo = needWorkTree(ctx);
-  const o = parseOpts(args, { bool: ['--detach', '-f', '--force', '--discard-changes', '--no-track', '-t', '--track'], val: ['-c', '--create', '-C', '--force-create', '--orphan'] });
+  const o = parseOpts(args, { bool: ['--detach', '-f', '--force', '--discard-changes', '--no-track', '-t', '--track', '-q', '--quiet'], val: ['-c', '--create', '-C', '--force-create', '--orphan'] });
+  if (o['-q'] || o['--quiet']) { const out = ctx.out; ctx.out = []; try { return commands.switch({ ...ctx, out: [], get repo() { return ctx.repo; } }, args.filter(a => a !== '-q' && a !== '--quiet')); } finally { ctx.out = out; } }
   if (o['--orphan']) {
     resetHard(repo, null); repo.index.clear();
     repo.HEAD = 'ref: refs/heads/' + o['--orphan'];
@@ -1148,6 +1164,7 @@ commands.switch = (ctx, args) => {
 
 commands.checkout = (ctx, args) => {
   const repo = needWorkTree(ctx);
+  if (args.includes('-q') || args.includes('--quiet')) { const sub = { ...ctx, out: [] }; return commands.checkout(sub, args.filter(a => a !== '-q' && a !== '--quiet')); }
   const o = parseOpts(args, { bool: ['-f', '--force', '--detach', '--ours', '--theirs', '-t', '--track', '--no-track'], val: ['-b', '-B', '--orphan'] });
   const w = ctx.world;
   // file checkout: git checkout -- file / git checkout <rev> -- file / git checkout file
@@ -1155,7 +1172,7 @@ commands.checkout = (ctx, args) => {
   let rev = null;
   if (!paths && o._.length && !o['-b'] && !o['-B']) {
     const first = o._[0];
-    const isRev = first === '-' || resolve(repo, first, { quiet: true }) !== null || Object.keys(repo.refs).some(r => r.startsWith('refs/remotes/') && r.endsWith('/' + first));
+    const isRev = first === '-' || resolve(repo, first, { quiet: true }) !== null || remoteMatches(repo.refs, first).length > 0;
     if (!isRev || o._.length > 1) {
       if (isRev) { rev = first; paths = o._.slice(1); } else paths = o._;
     }
@@ -1192,13 +1209,18 @@ commands.checkout = (ctx, args) => {
   return doSwitch(ctx, o._[0], { force: !!(o['-f'] || o['--force']), detach: true, verb: repo.refs['refs/heads/' + o._[0]] && !o['--detach'] ? 'checkout-branch' : 'checkout' });
 };
 
+// remote-tracking refs named <remote>/<target>, e.g. refs/remotes/origin/feature/x for "feature/x"
+function remoteMatches(refs, target) {
+  return Object.keys(refs).filter(r => r.startsWith('refs/remotes/') && !r.endsWith('/HEAD') && r.slice(13).split('/').slice(1).join('/') === target);
+}
+
 // `git checkout <name>` attaches to branches, guesses remote branches and otherwise detaches.
 function doSwitch(ctx, target, opts) {
   const refs = ctx.repo.refs;
   if (opts.verb === 'checkout-branch') return switchCore(ctx, target, { ...opts, detach: false, verb: 'checkout' });
   if (opts.verb === 'checkout' && target && (refs['refs/heads/' + target] || target === '-')) return switchCore(ctx, target, { ...opts, detach: false });
   if (opts.verb === 'checkout' && target && !opts.create && !refs['refs/heads/' + target]) {
-    const remoteRefs = Object.keys(refs).filter(r => r.startsWith('refs/remotes/') && r.endsWith('/' + target) && r.split('/').length === 4);
+    const remoteRefs = remoteMatches(refs, target);
     if (remoteRefs.length === 1) return switchCore(ctx, null, { create: target, startPoint: remoteRefs[0].slice(13), force: opts.force, verb: 'checkout' });
   }
   return switchCore(ctx, target, opts);

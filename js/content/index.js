@@ -7,5 +7,6 @@ import merging from './r04-merging.js';
 import rewriting from './r05-rewriting.js';
 import remotes from './r06-remotes.js';
 import github from './r07-github.js';
+import openSource from './r08-open-source.js';
 
-export const realms = [basecamp, firstCommits, timeTravel, branching, merging, rewriting, remotes, github];
+export const realms = [basecamp, firstCommits, timeTravel, branching, merging, rewriting, remotes, github, openSource];

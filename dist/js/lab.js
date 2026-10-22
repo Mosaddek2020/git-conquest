@@ -47,6 +47,17 @@ export function makeHelpers(world, shell) {
       const full = url.startsWith('https://') ? url : `https://github.com/${url}.git`;
       return reviewPR(world, world.remotes.get(full), number, { state, body, author });
     },
+    issue(url, { title, body = '', labels = [], author = 'Priya Sharma', state = 'open' }) {
+      const full = url.startsWith('https://') ? url : `https://github.com/${url}.git`;
+      const bare = world.remotes.get(full);
+      const issue = { number: bare.meta.nextNumber++, title, body, labels, state, author, comments: [], time: world.time };
+      bare.meta.issues.push(issue);
+      return issue.number;
+    },
+    protect(url, branch, rule = { requirePR: true, requiredReviews: 1 }) {
+      const full = url.startsWith('https://') ? url : `https://github.com/${url}.git`;
+      world.remotes.get(full).meta.protected[branch] = rule;
+    },
     pr(url, opts) {
       const full = url.startsWith('https://') ? url : `https://github.com/${url}.git`;
       const bare = world.remotes.get(full);
@@ -150,7 +161,7 @@ export class Lab {
     this.graph = new GraphView();
     this.areas = new AreasView();
     this.files = new FilesView();
-    this.gh = new GitHubView({ onAction: (msg, err) => { this.term.print(`\x1b[${err ? 31 : 35}m[GitHub] ${msg}\x1b[0m`); this.refresh(); this.check(); } });
+    this.gh = new GitHubView({ onAction: (msg, err) => { this.term.print(`\x1b[${err ? 31 : 35}m[GitHub] ${msg}\x1b[0m`); this.flushSay(); this.refresh(); this.check(); } });
     const panelDefs = { graph: ['Commit graph', this.graph], areas: ['Three areas', this.areas], files: ['Files', this.files], github: ['GitHub', this.gh] };
     const names = def.panels || ['graph', 'areas', 'files'];
     this.activePanel = names[0];
@@ -167,10 +178,12 @@ export class Lab {
     this.el.append(h('div', { class: 'lab-work' }, this.term.el, h('div', { class: 'panel' }, tabs, this.panelBody)));
     setTab(this.activePanel);
 
+    this.sayQueue = [];
+    this.say = (t) => this.sayQueue.push(t);
     this.world.listeners.clear();
     this.world.listeners.add(ev => {
       if (!def.events) return;
-      try { def.events(ev, { ...this.helpers, ...this.api, say: (t) => this.term.print(`\x1b[35m${t}\x1b[0m`) }); } catch (e) { console.error(e); }
+      try { def.events(ev, { ...this.helpers, ...this.api, say: this.say }); } catch (e) { console.error(e); }
     });
     this.renderTasks();
     if (this.already) this.renderBanner(true);
@@ -188,9 +201,14 @@ export class Lab {
 
   afterCommand(line, res) {
     if (line.trim()) this.history.push(line.trim());
-    try { this.def.onCommand?.(line, res, { ...this.helpers, ...this.api, say: (t) => this.term.print(`\x1b[35m${t}\x1b[0m`) }); } catch (e) { console.error(e); }
+    try { this.def.onCommand?.(line, res, { ...this.helpers, ...this.api, say: this.say }); } catch (e) { console.error(e); }
+    this.flushSay();
     this.refresh();
     this.check();
+  }
+
+  flushSay() {
+    for (const t of this.sayQueue.splice(0)) this.term.print(`\x1b[35m${t}\x1b[0m`);
   }
 
   check() {
