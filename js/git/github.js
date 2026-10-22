@@ -148,6 +148,7 @@ export function prStatus(world, bare, pr) {
   const checks = checksFor(bare, head);
   const failingChecks = checks.filter(c => c.conclusion !== 'success');
   const blockers = [];
+  if (pr.draft) blockers.push('This pull request is still a draft (gh pr ready)');
   if (merge.conflicts.length) blockers.push('This branch has conflicts that must be resolved');
   if (rule?.requiredReviews && approvals < rule.requiredReviews) blockers.push(`At least ${rule.requiredReviews} approving review is required by reviewers with write access`);
   if (changesRequested) blockers.push('Changes requested');
@@ -559,7 +560,11 @@ export function runGh(ctx, args, git) {
       out.push(`${sub === 'close' ? C.red('✓ Closed') : C.green('✓ Reopened')} pull request ${bare.meta.owner}/${bare.meta.name}#${pr.number} (${pr.title})`);
       return 0;
     }
-    if (sub === 'ready') { const pr = findPR(bare, rest[0]); pr.draft = false; out.push(`✓ Pull request ${bare.meta.owner}/${bare.meta.name}#${pr.number} is marked as "ready for review"`); return 0; }
+    if (sub === 'ready') {
+      const cur = ctx.repo.HEAD.startsWith('ref: refs/heads/') ? ctx.repo.HEAD.slice(16) : null;
+      const pr = rest[0] ? findPR(bare, rest[0]) : bare.meta.prs.find(p => p.state === 'open' && p.head === cur);
+      if (!pr) throw new GitError(`no pull requests found for branch "${cur}"`, 1);
+      pr.draft = false; out.push(`✓ Pull request ${bare.meta.owner}/${bare.meta.name}#${pr.number} is marked as "ready for review"`); return 0; }
     if (sub === 'edit') {
       const o = ghOpts(rest, { val: ['--title', '-t', '--body', '-b', '--add-reviewer', '--base', '-B', '--add-label'], alias: { '-t': '--title', '-b': '--body', '-B': '--base' } });
       const pr = findPR(bare, o._[0]);

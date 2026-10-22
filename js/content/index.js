@@ -8,5 +8,6 @@ import rewriting from './r05-rewriting.js';
 import remotes from './r06-remotes.js';
 import github from './r07-github.js';
 import openSource from './r08-open-source.js';
+import workflows from './r09-workflows.js';
 
-export const realms = [basecamp, firstCommits, timeTravel, branching, merging, rewriting, remotes, github, openSource];
+export const realms = [basecamp, firstCommits, timeTravel, branching, merging, rewriting, remotes, github, openSource, workflows];
