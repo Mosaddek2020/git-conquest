@@ -478,7 +478,7 @@ commands.rm = (ctx, args) => {
   const specs = [...o._, ...(o.paths || [])];
   if (!specs.length) throw new GitError('usage: git rm [<options>] [--] <file>...', 129);
   const match = specMatcher(ctx, specs);
-  const hits = [...repo.index.keys()].filter(match);
+  const hits = [...new Set([...repo.index.keys(), ...repo.conflicts.keys()])].filter(match);
   if (!hits.length) throw new GitError(`fatal: pathspec '${specs[0]}' did not match any files`);
   for (const s of specs) {
     const rel = relPath(ctx, s);
@@ -489,6 +489,7 @@ commands.rm = (ctx, args) => {
   const head = headTreeFlat(repo);
   if (!o['--cached'] && !o['-f'] && !o['--force'] && !o['-rf']) {
     const dirty = hits.filter(p => {
+      if (repo.conflicts.has(p)) return false;
       const work = readWork(repo, p);
       return repo.index.get(p) !== head.get(p) || (work !== undefined && ctx.world.blobHash(work) !== repo.index.get(p));
     });
@@ -497,6 +498,7 @@ commands.rm = (ctx, args) => {
   for (const p of hits) {
     ctx.out.push(`rm '${p}'`);
     repo.index.delete(p);
+    repo.conflicts.delete(p);
     if (!o['--cached']) removeWork(repo, p);
   }
   ctx.world.pruneEmptyDirs(repo.root);
