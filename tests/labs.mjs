@@ -6,7 +6,7 @@ import { Shell } from '../js/git/shell.js';
 import { makeHelpers, makeCheckApi } from '../js/lab.js';
 
 const only = process.argv[2];
-let failures = 0, labs = 0;
+let failures = 0, labs = 0, warnings = 0;
 for (const realm of realms) {
   for (const lesson of realm.lessons) {
     const id = `${realm.id}/${lesson.id}`;
@@ -29,6 +29,9 @@ for (const realm of realms) {
     for (let i = 0; i < def.tasks.length; i++) {
       const t = def.tasks[i];
       const steps = t.test || (t.solution ? [t.solution] : []);
+      let early = false;
+      try { early = !!t.check(api); } catch { early = false; }
+      if (early && !t.allowEarly) { console.log(`! ${id} task ${i + 1} passes before its steps run: ${t.title}`); warnings++; }
       for (const step of steps) {
         const s = typeof step === 'string' ? { cmd: step } : step;
         const edits = s.edits ? [...s.edits] : (s.edit !== undefined ? [s.edit] : []);
@@ -50,5 +53,5 @@ for (const realm of realms) {
     if (ok) console.log(`✓ ${id} (${def.tasks.length} tasks)`); else failures++;
   }
 }
-console.log(`\n${labs - failures}/${labs} labs solvable`);
+console.log(`\n${labs - failures}/${labs} labs solvable, ${warnings} premature-pass warnings`);
 process.exit(failures ? 1 : 0);

@@ -220,7 +220,7 @@ export class Lab {
     this.def.tasks.forEach((t, i) => {
       const li = h('li', { class: 'task' + (this.done[i] ? ' is-done' : i === cur ? ' is-current' : ' is-later') });
       const body = h('div', {}, h('div', { class: 'tt' }, t.title));
-      if (t.detail) { const d = h('div', { class: 'td' }); d.innerHTML = renderMarkdown(t.detail).replace(/^<p>|<\/p>$/g, ''); body.append(d); }
+      if (t.detail && i === cur) { const d = h('div', { class: 'td' }); d.innerHTML = renderMarkdown(t.detail).replace(/^<p>|<\/p>$/g, ''); body.append(d); }
       if (i === cur) {
         const r = this.revealed[i];
         if (r >= 1 && t.hint) { const d = h('div', { class: 'hint-text' }); d.innerHTML = renderMarkdown(t.hint).replace(/^<p>|<\/p>$/g, ''); body.append(d); }
