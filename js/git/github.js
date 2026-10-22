@@ -261,6 +261,7 @@ export function runGh(ctx, args, git) {
   const me = w.github.user;
   const [group, sub, ...rest] = args;
   const out = ctx.out;
+  if (group === '--version' || group === 'version') { out.push('gh version 2.63.0 (git-conquest simulator)'); return 0; }
   if (!group || group === '--help' || group === 'help') {
     out.push('Work seamlessly with GitHub from the command line.', '', 'USAGE', '  gh <command> <subcommand> [flags]', '', 'CORE COMMANDS',
       '  auth:        Authenticate gh and git with GitHub', '  browse:      Open repositories, issues, pull requests in the browser',

@@ -75,6 +75,7 @@ export class World {
       ...(opts.globalConfig || {}),
     };
     if (opts.noIdentity) { delete this.globalConfig['user.name']; delete this.globalConfig['user.email']; }
+    if (opts.freshConfig) this.globalConfig = { ...(opts.globalConfig || {}) };
     this.github = {
       user: opts.githubUser || 'you',
       sshKeys: [],
