@@ -684,6 +684,8 @@ commands.log = (ctx, args) => {
   if (o['--merges']) list = list.filter(h => w.commit(h).parents.length > 1);
   if (o['--author']) { const re = new RegExp(o['--author'], 'i'); list = list.filter(h => re.test(`${w.commit(h).author.name} <${w.commit(h).author.email}>`)); }
   if (o['--grep']) { const re = new RegExp(o['--grep'], 'i'); list = list.filter(h => re.test(w.commit(h).message)); }
+  if (o['--since']) { const t = parseWhen(o['--since'], w.time); if (t !== null) list = list.filter(h => w.commit(h).committer.time >= t); }
+  if (o['--until']) { const t = parseWhen(o['--until'], w.time); if (t !== null) list = list.filter(h => w.commit(h).committer.time <= t); }
   if (o['-S']) {
     const needle = o['-S'];
     const count = (h) => { let n = 0; for (const [, b] of commitTreeFlat(repo, h)) n += w.objects.get(b).content.split(needle).length - 1; return n; };
@@ -748,6 +750,17 @@ commands.log = (ctx, args) => {
   ctx.out.push(...lines);
   return 0;
 };
+
+export function parseWhen(s, now) {
+  s = String(s).trim().toLowerCase();
+  if (s === 'yesterday') return now - 86400;
+  if (s === 'today' || s === 'now') return now - (now % 86400);
+  if (/^\d{4}-\d{2}-\d{2}/.test(s)) { const t = Date.parse(s.length === 10 ? s + 'T23:59:59Z' : s); return Number.isNaN(t) ? null : Math.floor(t / 1000); }
+  const m = s.match(/^(\d+)[\s.]*(second|minute|hour|day|week|month|year)s?(\s+ago)?$/);
+  if (!m) return null;
+  const unit = { second: 1, minute: 60, hour: 3600, day: 86400, week: 604800, month: 2592000, year: 31536000 }[m[2]];
+  return now - Number(m[1]) * unit;
+}
 
 function relPathSafe(ctx, a) {
   try { return relPath(ctx, a); } catch { return '\u0000'; }
@@ -1134,7 +1147,8 @@ function switchCore(ctx, target, { create = null, force = false, detach = false,
 
 commands.switch = (ctx, args) => {
   const repo = needWorkTree(ctx);
-  const o = parseOpts(args, { bool: ['--detach', '-f', '--force', '--discard-changes', '--no-track', '-t', '--track'], val: ['-c', '--create', '-C', '--force-create', '--orphan'] });
+  const o = parseOpts(args, { bool: ['--detach', '-f', '--force', '--discard-changes', '--no-track', '-t', '--track', '-q', '--quiet'], val: ['-c', '--create', '-C', '--force-create', '--orphan'] });
+  if (o['-q'] || o['--quiet']) { const out = ctx.out; ctx.out = []; try { return commands.switch({ ...ctx, out: [], get repo() { return ctx.repo; } }, args.filter(a => a !== '-q' && a !== '--quiet')); } finally { ctx.out = out; } }
   if (o['--orphan']) {
     resetHard(repo, null); repo.index.clear();
     repo.HEAD = 'ref: refs/heads/' + o['--orphan'];
@@ -1148,6 +1162,7 @@ commands.switch = (ctx, args) => {
 
 commands.checkout = (ctx, args) => {
   const repo = needWorkTree(ctx);
+  if (args.includes('-q') || args.includes('--quiet')) { const sub = { ...ctx, out: [] }; return commands.checkout(sub, args.filter(a => a !== '-q' && a !== '--quiet')); }
   const o = parseOpts(args, { bool: ['-f', '--force', '--detach', '--ours', '--theirs', '-t', '--track', '--no-track'], val: ['-b', '-B', '--orphan'] });
   const w = ctx.world;
   // file checkout: git checkout -- file / git checkout <rev> -- file / git checkout file
