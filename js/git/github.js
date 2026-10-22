@@ -84,6 +84,10 @@ export function parseWorkflow(text) {
 // `npm run lint` fails on a leftover console.log.
 export function simulateRun(cmd, flat, world) {
   const files = [...flat].map(([p, h]) => [p, world.objects.get(h).content]);
+  if (/npm (run )?test|npm t\b|pytest|go test|cargo test/.test(cmd) && world.testRule) {
+    const r = world.testRule(Object.fromEntries(files));
+    return r.ok ? { ok: true, log: r.log || ['PASS all suites'] } : { ok: false, log: r.log || ['FAIL'] };
+  }
   if (/npm (run )?test|npm t\b|pytest|go test|cargo test/.test(cmd)) {
     const bad = files.filter(([p, c]) => !p.startsWith('.github/') && /\bBUG\b/.test(c));
     return bad.length ? { ok: false, log: [`FAIL ${bad[0][0]}`, `  ✕ found a BUG marker in ${bad[0][0]}`, `Tests: 1 failed, ${files.length} total`] } : { ok: true, log: [`PASS all suites`, `Tests: ${Math.max(1, files.length)} passed, ${Math.max(1, files.length)} total`] };

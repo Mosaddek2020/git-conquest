@@ -9,5 +9,6 @@ import remotes from './r06-remotes.js';
 import github from './r07-github.js';
 import openSource from './r08-open-source.js';
 import workflows from './r09-workflows.js';
+import powerTools from './r10-power-tools.js';
 
-export const realms = [basecamp, firstCommits, timeTravel, branching, merging, rewriting, remotes, github, openSource, workflows];
+export const realms = [basecamp, firstCommits, timeTravel, branching, merging, rewriting, remotes, github, openSource, workflows, powerTools];

@@ -329,6 +329,17 @@ export class Shell {
   }
 
   execPipeline(pipeline, out, result, stdin = null) {
+    let negate = false;
+    const first = pipeline[0]?.argv[0];
+    if (first && !first.quoted && first.text === '!') {
+      negate = true;
+      pipeline = [{ ...pipeline[0], argv: pipeline[0].argv.slice(1) }, ...pipeline.slice(1)];
+    }
+    const code = this.runPipeline(pipeline, out, result, stdin);
+    return negate ? (code === 0 ? 1 : 0) : code;
+  }
+
+  runPipeline(pipeline, out, result, stdin = null) {
     let input = stdin;
     let code = 0;
     for (let k = 0; k < pipeline.length; k++) {
