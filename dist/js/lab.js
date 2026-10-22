@@ -8,7 +8,7 @@ import { GraphView } from './ui/graph.js';
 import { AreasView, FilesView, GitHubView } from './ui/panels.js';
 import { World, normPath, stripAnsi } from './git/world.js';
 import { Shell } from './git/shell.js';
-import { seedRemote, teammateCommit, reviewPR, createPR } from './git/github.js';
+import { seedRemote, teammateCommit, reviewPR, createPR, mergePR } from './git/github.js';
 import { computeStatus, headCommit, currentBranch, revList, resolve, isAncestor, branchNames, commitTreeFlat } from './git/core.js';
 
 export function makeHelpers(world, shell) {
@@ -53,6 +53,11 @@ export function makeHelpers(world, shell) {
       const issue = { number: bare.meta.nextNumber++, title, body, labels, state, author, comments: [], time: world.time };
       bare.meta.issues.push(issue);
       return issue.number;
+    },
+    mergePR(url, number, method = 'squash') {
+      const full = url.startsWith('https://') ? url : `https://github.com/${url}.git`;
+      const bare = world.remotes.get(full);
+      return mergePR(world, bare, bare.meta.prs.find(p => p.number === number), method, { admin: true });
     },
     protect(url, branch, rule = { requirePR: true, requiredReviews: 1 }) {
       const full = url.startsWith('https://') ? url : `https://github.com/${url}.git`;

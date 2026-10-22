@@ -933,7 +933,7 @@ commands.show = (ctx, args) => {
 commands.branch = (ctx, args) => {
   const repo = needRepo(ctx);
   const o = parseOpts(args, {
-    bool: ['-d', '--delete', '-D', '-m', '--move', '-M', '-a', '--all', '-r', '--remotes', '-v', '-vv', '--verbose', '--merged', '--no-merged', '--show-current', '-f', '--force', '--unset-upstream', '--list', '-c', '--copy'],
+    bool: ['-d', '--delete', '-D', '-m', '--move', '-M', '-a', '--all', '-r', '--remotes', '-v', '-vv', '--verbose', '--merged', '--no-merged', '--show-current', '-f', '--force', '--unset-upstream', '--list', '-c', '--copy', '-q', '--quiet'],
     val: ['-u', '--set-upstream-to', '--contains'],
     alias: { '--delete': '-d', '--move': '-m', '--all': '-a', '--remotes': '-r', '--verbose': '-v', '--set-upstream-to': '-u', '--force': '-f' },
   });
@@ -2175,11 +2175,67 @@ commands.bisect = (ctx, args) => {
 commands.gc = (ctx) => { needRepo(ctx); ctx.out.push('Enumerating objects: done.', 'Counting objects: 100% done.', 'Nothing new to pack.'); return 0; };
 commands.fsck = (ctx) => { needRepo(ctx); ctx.out.push('Checking object directories: 100% (256/256), done.'); return 0; };
 commands.worktree = (ctx, args) => {
-  const repo = needWorkTree(ctx);
-  if (args[0] === 'list') { ctx.out.push(`${repo.root}  ${shortHash(headCommit(repo))} [${currentBranch(repo) || 'detached'}]`); return 0; }
-  ctx.out.push(C.dim('git worktree lets one repository have several working folders at once, each on its own branch.'), C.dim('The simulator only supports `git worktree list`.'));
-  return 0;
+  const repo = needRepo(ctx);
+  const w = ctx.world;
+  const main = repo.mainRepo || repo;
+  const sub = args[0];
+  const linked = () => [...w.repos.values()].filter(r => r === main || r.mainRepo === main);
+  if (sub === 'list' || !sub) {
+    for (const r of linked()) ctx.out.push(`${r.root.padEnd(32)} ${shortHash(headCommit(r))} [${currentBranch(r) || 'detached HEAD'}]`);
+    return 0;
+  }
+  if (sub === 'add') {
+    const o = parseOpts(args.slice(1), { bool: ['-f', '--force', '--detach'], val: ['-b', '-B'] });
+    const path = o._[0];
+    if (!path) throw new GitError('usage: git worktree add [<options>] <path> [<commit-ish>]', 129);
+    const abs = normPath(ctx.cwd + '/' + path);
+    if (w.repos.has(abs) || [...w.files.keys()].some(f => f.startsWith(abs + '/'))) throw new GitError(`fatal: '${path}' already exists`);
+    let branch = o['-b'] || o['-B'] || null;
+    let start = o._[1] || null;
+    if (!branch && start && main.refs['refs/heads/' + start]) { branch = start; start = null; }
+    if (!branch && !start && !o['--detach']) { branch = path.split('/').pop(); }
+    if (branch && !o['-b'] && !o['-B'] && !main.refs['refs/heads/' + branch]) {
+      main.refs['refs/heads/' + branch] = resolveCommit(main, start || 'HEAD');
+      ctx.out.push(`Preparing worktree (new branch '${branch}')`);
+    } else if (o['-b'] || o['-B']) {
+      if (main.refs['refs/heads/' + branch] && !o['-B']) throw new GitError(`fatal: a branch named '${branch}' already exists`);
+      main.refs['refs/heads/' + branch] = resolveCommit(main, start || 'HEAD');
+      ctx.out.push(`Preparing worktree (new branch '${branch}')`);
+    } else ctx.out.push(`Preparing worktree (checking out '${branch || start}')`);
+    if (branch) {
+      const busy = linked().find(r => currentBranch(r) === branch);
+      if (busy) throw new GitError(`fatal: '${branch}' is already used by worktree at '${busy.root}'`);
+    }
+    const wt = w.createRepo(abs);
+    wt.mainRepo = main;
+    wt.refs = main.refs;            // refs, config and objects are shared with the main worktree
+    wt.config = main.config;
+    wt.stash = main.stash;
+    wt.HEAD = branch ? 'ref: refs/heads/' + branch : resolveCommit(main, start || 'HEAD');
+    const tip = headCommit(wt);
+    checkoutTree(wt, commitTreeFlat(wt, tip), { from: new Map(), force: true });
+    ctx.out.push(`HEAD is now at ${describeCommit(w, tip)}`);
+    w.emit({ type: 'worktree-add', path: abs, branch });
+    return 0;
+  }
+  if (sub === 'remove') {
+    const path = args.filter(a => !a.startsWith('-'))[1];
+    const abs = normPath(ctx.cwd + '/' + path);
+    const target = w.repos.get(abs);
+    if (!target || target.mainRepo !== main) throw new GitError(`fatal: '${path}' is not a working tree`);
+    if (!args.includes('--force') && !args.includes('-f')) {
+      const st = computeStatus(target);
+      if (st.staged.length || st.unstaged.length || st.untracked.length) throw new GitError(`fatal: '${path}' contains modified or untracked files, use --force to delete it`);
+    }
+    for (const f of [...w.files.keys()]) if (f.startsWith(abs + '/')) w.files.delete(f);
+    for (const d of [...w.dirs]) if (d === abs || d.startsWith(abs + '/')) w.dirs.delete(d);
+    w.repos.delete(abs);
+    return 0;
+  }
+  if (sub === 'prune') return 0;
+  throw new GitError(`usage: git worktree add | list | remove | prune`, 129);
 };
+
 commands.describe = (ctx, args) => {
   const repo = needRepo(ctx);
   const o = parseOpts(args, { bool: ['--tags', '--always'], val: [] });
