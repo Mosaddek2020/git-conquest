@@ -284,7 +284,15 @@ export function remoteCommands({ parseOpts, needRepo, needWorkTree, mergeInto, c
           repo.config[`branch.${src}.remote`] = remote;
           repo.config[`branch.${src}.merge`] = 'refs/heads/' + dst;
         }
-        if (!isTag) runWorkflows(w, bare, 'push', dst, commitHash);
+        if (!isTag) {
+          runWorkflows(w, bare, 'push', dst, commitHash);
+          // pull_request workflows re-run when a PR's head branch is pushed
+          for (const target of w.remotes.values()) {
+            for (const pr of target.meta.prs || []) {
+              if (pr.state === 'open' && pr.headRepo === bare.meta.url && pr.head === dst) runWorkflows(w, target, 'pull_request', dst, commitHash, pr.number);
+            }
+          }
+        }
         w.emit({ type: 'push', remote, url: bare.meta.url, branch: dst, hash: commitHash, tag: isTag });
       });
     }

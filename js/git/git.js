@@ -933,7 +933,7 @@ commands.show = (ctx, args) => {
 commands.branch = (ctx, args) => {
   const repo = needRepo(ctx);
   const o = parseOpts(args, {
-    bool: ['-d', '--delete', '-D', '-m', '--move', '-M', '-a', '--all', '-r', '--remotes', '-v', '-vv', '--verbose', '--merged', '--no-merged', '--show-current', '-f', '--force', '--unset-upstream', '--list', '-c', '--copy'],
+    bool: ['-d', '--delete', '-D', '-m', '--move', '-M', '-a', '--all', '-r', '--remotes', '-v', '-vv', '--verbose', '--merged', '--no-merged', '--show-current', '-f', '--force', '--unset-upstream', '--list', '-c', '--copy', '-q', '--quiet'],
     val: ['-u', '--set-upstream-to', '--contains'],
     alias: { '--delete': '-d', '--move': '-m', '--all': '-a', '--remotes': '-r', '--verbose': '-v', '--set-upstream-to': '-u', '--force': '-f' },
   });

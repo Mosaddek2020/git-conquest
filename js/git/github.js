@@ -157,6 +157,7 @@ export function prStatus(world, bare, pr) {
   if (rule?.requiredReviews && approvals < rule.requiredReviews) blockers.push(`At least ${rule.requiredReviews} approving review is required by reviewers with write access`);
   if (changesRequested) blockers.push('Changes requested');
   if (rule?.requireChecks && (failingChecks.length || !checks.length)) blockers.push(checks.length ? 'Required status checks failed' : 'Required status checks have not run');
+  if (rule?.requireUpToDate && !isAncestor(world, base, head)) blockers.push('This branch is out-of-date with the base branch (rebase or merge the latest base)');
   return { head, base, mb, merge, commits, approvals, checks, conflicts: merge.conflicts.map(c => c.path), blockers, mergeable: !blockers.length };
 }
 
@@ -657,6 +658,29 @@ export function runGh(ctx, args, git) {
       out.push(C.bold(r.title), r.tag, '', ...r.notes.split('\n'));
       return 0;
     }
+  }
+
+  if (group === 'secret') {
+    const { bare } = contextRepo(ctx, { upstreamFirst: false });
+    bare.meta.secrets = bare.meta.secrets || {};
+    if (sub === 'set') {
+      const o = ghOpts(rest, { val: ['--body', '-b'], alias: { '-b': '--body' } });
+      const name = o._[0];
+      if (!name) throw new GitError('secret name required', 1);
+      if (!o['--body']) throw new GitError('no secret value provided: use --body', 1);
+      if (!/^[A-Z_][A-Z0-9_]*$/i.test(name)) throw new GitError('secret names can only contain letters, numbers and _', 1);
+      bare.meta.secrets[name.toUpperCase()] = { updated: w.time };
+      out.push(`✓ Set Actions secret ${name.toUpperCase()} for ${bare.meta.owner}/${bare.meta.name}`);
+      w.emit({ type: 'secret-set', name: name.toUpperCase() });
+      return 0;
+    }
+    if (sub === 'list') {
+      const names = Object.keys(bare.meta.secrets);
+      if (!names.length) { out.push('no secrets found'); return 0; }
+      for (const n of names) out.push(`${n.padEnd(20)} Updated ${relativeTime(bare.meta.secrets[n].updated, w.time)}`);
+      return 0;
+    }
+    if (sub === 'delete') { delete bare.meta.secrets[(rest[0] || '').toUpperCase()]; out.push(`✓ Deleted secret ${rest[0]}`); return 0; }
   }
 
   if (group === 'run') {
