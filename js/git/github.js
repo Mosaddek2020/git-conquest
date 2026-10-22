@@ -421,10 +421,15 @@ export function runGh(ctx, args, git) {
       const cur = repo.HEAD.startsWith('ref: refs/heads/') ? repo.HEAD.slice(16) : null;
       let headSpec = o['--head'] || cur;
       if (!headSpec) throw new GitError('could not determine the current branch', 1);
-      let headOwner = me, headBranch = headSpec;
+      let headOwner = null, headBranch = headSpec;
       if (headSpec.includes(':')) [headOwner, headBranch] = headSpec.split(':');
       const originBare = repo.config['remote.origin.url'] ? w.remoteByUrl(repo.config['remote.origin.url']) : null;
-      const headRepo = headOwner === bare.meta.owner ? bare : (originBare && originBare.meta.owner === headOwner ? originBare : w.remotes.get(`https://github.com/${headOwner}/${bare.meta.name}.git`));
+      let headRepo;
+      if (headOwner) headRepo = headOwner === bare.meta.owner ? bare : w.remotes.get(`https://github.com/${headOwner}/${bare.meta.name}.git`);
+      else if (originBare && originBare !== bare && originBare.refs['refs/heads/' + headBranch]) headRepo = originBare;
+      else if (bare.refs['refs/heads/' + headBranch]) headRepo = bare;
+      else headRepo = originBare || bare;
+      headOwner = headRepo ? headRepo.meta.owner : me;
       if (!headRepo || !headRepo.refs['refs/heads/' + headBranch]) {
         throw new GitError(`aborted: you must first push the current branch to a remote, or use the --head flag`, 1);
       }
