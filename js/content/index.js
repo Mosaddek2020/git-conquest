@@ -5,5 +5,6 @@ import timeTravel from './r02-time-travel.js';
 import branching from './r03-branching.js';
 import merging from './r04-merging.js';
 import rewriting from './r05-rewriting.js';
+import remotes from './r06-remotes.js';
 
-export const realms = [basecamp, firstCommits, timeTravel, branching, merging, rewriting];
+export const realms = [basecamp, firstCommits, timeTravel, branching, merging, rewriting, remotes];

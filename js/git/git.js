@@ -1118,7 +1118,7 @@ function switchCore(ctx, target, { create = null, force = false, detach = false,
   }
   // guess remote branch
   if (!detach && verb !== 'checkout-detach') {
-    const remoteRefs = Object.keys(repo.refs).filter(r => r.startsWith('refs/remotes/') && r.endsWith('/' + target) && r.split('/').length === 4);
+    const remoteRefs = remoteMatches(repo.refs, target);
     if (remoteRefs.length === 1) return switchCore(ctx, null, { create: target, startPoint: remoteRefs[0].slice(13), force });
   }
   const h = resolve(repo, target, { quiet: true });
@@ -1172,7 +1172,7 @@ commands.checkout = (ctx, args) => {
   let rev = null;
   if (!paths && o._.length && !o['-b'] && !o['-B']) {
     const first = o._[0];
-    const isRev = first === '-' || resolve(repo, first, { quiet: true }) !== null || Object.keys(repo.refs).some(r => r.startsWith('refs/remotes/') && r.endsWith('/' + first));
+    const isRev = first === '-' || resolve(repo, first, { quiet: true }) !== null || remoteMatches(repo.refs, first).length > 0;
     if (!isRev || o._.length > 1) {
       if (isRev) { rev = first; paths = o._.slice(1); } else paths = o._;
     }
@@ -1209,13 +1209,18 @@ commands.checkout = (ctx, args) => {
   return doSwitch(ctx, o._[0], { force: !!(o['-f'] || o['--force']), detach: true, verb: repo.refs['refs/heads/' + o._[0]] && !o['--detach'] ? 'checkout-branch' : 'checkout' });
 };
 
+// remote-tracking refs named <remote>/<target>, e.g. refs/remotes/origin/feature/x for "feature/x"
+function remoteMatches(refs, target) {
+  return Object.keys(refs).filter(r => r.startsWith('refs/remotes/') && !r.endsWith('/HEAD') && r.slice(13).split('/').slice(1).join('/') === target);
+}
+
 // `git checkout <name>` attaches to branches, guesses remote branches and otherwise detaches.
 function doSwitch(ctx, target, opts) {
   const refs = ctx.repo.refs;
   if (opts.verb === 'checkout-branch') return switchCore(ctx, target, { ...opts, detach: false, verb: 'checkout' });
   if (opts.verb === 'checkout' && target && (refs['refs/heads/' + target] || target === '-')) return switchCore(ctx, target, { ...opts, detach: false });
   if (opts.verb === 'checkout' && target && !opts.create && !refs['refs/heads/' + target]) {
-    const remoteRefs = Object.keys(refs).filter(r => r.startsWith('refs/remotes/') && r.endsWith('/' + target) && r.split('/').length === 4);
+    const remoteRefs = remoteMatches(refs, target);
     if (remoteRefs.length === 1) return switchCore(ctx, null, { create: target, startPoint: remoteRefs[0].slice(13), force: opts.force, verb: 'checkout' });
   }
   return switchCore(ctx, target, opts);
