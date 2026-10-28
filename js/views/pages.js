@@ -48,6 +48,12 @@ export function renderPath() {
       h('ol', { class: 'lesson-list' }, r.lessons.map(l => h('li', {}, lessonRow(l))))));
   }
   page.append(grid);
+  // the companion course picks up where this one ends
+  page.append(h('aside', { class: 'course-link' },
+    h('p', { class: 'eyebrow' }, 'Next course'),
+    h('h2', {}, 'DevOps Conquest'),
+    h('p', {}, 'Take your git skills into Linux, networking, CI/CD, containers, Kubernetes, infrastructure as code, observability, security and AI-assisted operations, with real servers simulated in your browser.'),
+    h('a', { class: 'btn btn-primary', href: 'https://mosaddek2020.github.io/devops-conquest/', target: '_blank', rel: 'noopener' }, 'Open DevOps Conquest ↗')));
   return page;
 }
 

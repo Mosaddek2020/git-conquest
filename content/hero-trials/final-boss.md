@@ -25,8 +25,13 @@ You started at Base Camp not knowing what a commit was. Look at what you can do 
 - **Work on GitHub**: issues, pull requests, reviews, protected branches, CODEOWNERS, releases.
 - **Automate**: Actions, required checks, secrets, Dependabot, deploy pipelines with approvals, and rollbacks.
 - **Wield power tools**: bisect, blame, hooks, aliases, worktrees, and the object model underneath it all.
+- **Scale and protect** repositories: signed commits, `.gitattributes`, Git LFS, shallow and sparse clones, scrubbing secrets from history, CODEOWNERS and merge queues.
+- **Maintain** projects for years: range-diff, rerere, patches by email, backports with cherry and notes, submodules.
+- **Work with AI** without giving up authorship: verify every claim, keep secrets out of prompts, tidy agent branches, test AI resolutions, keep AI reviewers advisory.
 - **Rescue** any situation by asking two questions: is it committed, and is it shared?
 
 The rest is practice. Real projects will throw situations at you that no course can predict, and you now have the mental models to reason your way through them.
+
+**Where next?** [DevOps Conquest](https://mosaddek2020.github.io/devops-conquest/) takes these skills into Linux, CI/CD, containers, Kubernetes, infrastructure as code and AI-assisted operations, in the same hands-on style.
 
 ## lab | Lighthouse, day one

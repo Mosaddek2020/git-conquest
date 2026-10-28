@@ -571,6 +571,7 @@ export function runGh(ctx, args, git) {
       const o = ghOpts(rest, { val: ['--body', '-b'], alias: { '-b': '--body' } });
       const pr = findPR(bare, o._[0]);
       pr.comments.push({ author: me, body: o['--body'] || '', time: w.time });
+      w.emit({ type: 'pr-comment', url: bare.meta.url, number: pr.number, author: me, body: o['--body'] || '' });
       out.push(`https://github.com/${bare.meta.owner}/${bare.meta.name}/pull/${pr.number}#issuecomment-1`);
       return 0;
     }

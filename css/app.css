@@ -570,6 +570,9 @@ button { font: inherit; color: inherit; }
 .gh-protect summary { cursor: pointer; font-weight: 700; font-size: 13px; color: var(--text-2); }
 .gh-toggle { display: flex; gap: 8px; align-items: center; padding: 4px 0; font-size: 13px; cursor: pointer; }
 .gh-toggle input { accent-color: var(--main); width: 16px; height: 16px; }
+.course-link { margin-top: 40px; padding: 20px 22px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface); display: grid; gap: 8px; justify-items: start; }
+.course-link h2 { font-size: var(--step-2); margin: 0; }
+.course-link p:not(.eyebrow) { margin: 0; color: var(--text-2); max-width: 60ch; }
 .move-progress { margin-top: 40px; padding-top: 20px; border-top: 1px solid var(--line); }
 .progress-code { width: 100%; box-sizing: border-box; resize: vertical; font: 12.5px/1.5 var(--font-mono); color: var(--text); background: var(--surface-2); border: 1px solid var(--line-strong); border-radius: var(--radius-sm); padding: 10px 12px; word-break: break-all; }
 .move-msg { margin-top: 10px; color: var(--text-2); }

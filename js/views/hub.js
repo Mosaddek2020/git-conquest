@@ -145,7 +145,9 @@ class World3D {
 
     // realm positions along a gentle S-curve
     const N = curriculum.realms.length;
-    const realmPos = curriculum.realms.map((r, i) => new THREE.Vector3((i - (N - 1) / 2) * 7.2, Math.sin(i * 0.7) * 2.2, Math.sin(i * 0.95) * 7));
+    // the whole path keeps roughly the same length however many realms there are
+    const step = Math.min(7.2, 90 / Math.max(1, N - 1));
+    const realmPos = curriculum.realms.map((r, i) => new THREE.Vector3((i - (N - 1) / 2) * step, Math.sin(i * 0.7) * 2.2, Math.sin(i * 0.95) * 7));
     const origin = realmPos[0].clone().add(new THREE.Vector3(-7.2, 0, -2));
     this.realmPos = realmPos;
 
@@ -345,10 +347,29 @@ class World3D {
       if (!visible || Math.abs(v.x) > 1.1 || Math.abs(v.y) > 1.1) { l.el.style.display = 'none'; continue; }
       if (l.kind === 'lesson' && dist > 34 && !l.el.classList.contains('is-current')) { l.el.style.display = 'none'; continue; }
       l.el.style.display = '';
-      l.el.style.left = `${(v.x + 1) / 2 * w}px`;
-      l.el.style.top = `${(1 - v.y) / 2 * hgt}px`;
+      l.x = (v.x + 1) / 2 * w;
+      l.y = (1 - v.y) / 2 * hgt;
+      l.dist = dist;
       l.el.style.opacity = String(Math.max(0.35, Math.min(1, 1.6 - dist / 60)));
       l.el.style.zIndex = String(Math.round(1000 - dist * 10));
+    }
+    // nearer labels win; a realm label that would overlap one is nudged below it
+    const shown = this.labels.filter(l => l.el.style.display !== 'none').sort((a, b) => a.dist - b.dist);
+    const placed = [];
+    for (const l of shown) {
+      if (!l.size) l.size = [l.el.offsetWidth || 120, l.el.offsetHeight || 24];
+      const [lw, lh] = l.size;
+      let y = l.y;
+      if (l.kind === 'realm' || l.el.classList.contains('is-current')) {
+        for (let k = 0; k < 4; k++) {
+          const hit = placed.find(p => Math.abs(p.x - l.x) < (p.w + lw) / 2 && Math.abs(p.y - y) < (p.h + lh) / 2);
+          if (!hit) break;
+          y = hit.y + (hit.h + lh) / 2 + 2;
+        }
+        placed.push({ x: l.x, y, w: lw, h: lh });
+      }
+      l.el.style.left = `${l.x}px`;
+      l.el.style.top = `${y}px`;
     }
   }
 

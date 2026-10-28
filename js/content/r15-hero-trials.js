@@ -1,9 +1,14 @@
-// Realm 15 · Hero Trials: disaster recovery and the final boss.
+// Realm 15 · Hero Trials: disaster recovery, three outcome-based trials and the final boss.
 
 import { todoPlan } from './r05-rewriting.js';
+import { revList } from '../git/core.js';
 
 const CI_YML = 'name: CI\non:\n  push:\n    branches: [main]\n  pull_request:\njobs:\n  test:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@v4\n      - run: npm ci\n      - run: npm test\n';
 const PRIYA = { name: 'Priya Sharma', email: 'priya@example.com' };
+
+// every file version in the history of the given commits
+const blobsOf = (world, tips) => revList(world, tips.filter(Boolean)).flatMap(h => [...world.readTreeFlat(world.commit(h).tree).values()].map(b => world.objects.get(b).content));
+const allTipsOf = repo => Object.entries(repo.refs).filter(([r]) => r.startsWith('refs/heads/') || r.startsWith('refs/tags/')).map(([, h]) => repo.world.peel(h));
 
 // Build a commit directly in a bare repository (used to stage incidents).
 function bareCommit(world, bare, { parents, files, remove = [], message, author = PRIYA }) {
@@ -22,7 +27,7 @@ export default {
   title: 'Hero Trials',
   tagline: 'Rescue any situation, then prove everything in the final trial',
   badge: 'Git Hero',
-  intro: 'The last realm. First, a **rescue playbook** that turns "I broke git" into a calm, five-minute fix. Then **The Conquest**: one long, realistic day that uses everything you learned, from bisect to backports.',
+  intro: 'The last realm. First, a **rescue playbook** that turns "I broke git" into a calm, five-minute fix. Then three **trials** that state the outcome and leave the commands to you: run a release as the **maintainer**, land a contribution as an **outside contributor**, and perform **history surgery** on a leaked key without losing a teammate\'s work. Finally, **The Conquest**: one long, realistic day that uses everything you learned.',
   lessons: [
     {
       id: 'rescue-playbook',
@@ -78,6 +83,163 @@ export default {
         { type: 'mc', q: 'A bad merge commit is on shared main. How do you undo it?', choices: ['git reset --hard HEAD~1 && git push --force', 'git revert -m 1 <merge>', 'git branch -D main', 'git commit --amend'], answer: 1, explain: '-m 1 keeps main\'s side.' },
         { type: 'multi', q: 'Which of these can the reflog help recover?', choices: ['Commits lost after reset --hard', 'A deleted branch', 'Commits made on a detached HEAD', 'Edits that were never committed'], answer: [0, 1, 2], explain: 'Only committed work.' },
         { type: 'mc', q: 'You committed a password and already pushed. What comes first?', choices: ['Rewrite history', 'Rotate (change) the password', 'Make the repo private', 'Delete the file'], answer: 1, explain: 'Assume it is compromised.' },
+      ],
+    },
+    {
+      id: 'release-captain',
+      title: 'Trial: release captain',
+      summary: "Review a fork's pull request, merge it, credit the contributor and ship a signed release.",
+      minutes: 30,
+      boss: true,
+      lab: {
+        cwd: '~/beacon',
+        panels: ['github', 'graph', 'files'],
+        setup(H) {
+          const w = H.world;
+          w.testRule = files => /2 \*\* attempt/.test(files['src/retry.js'] || '') ? { ok: true, log: ['PASS retry.test.js', '  ✓ waits 100, 200, 400 ms'] } : { ok: false, log: ['FAIL retry.test.js', '  ✕ expected a growing delay, got 0 ms'] };
+          H.remote('beacon', 'beacon', [{ message: 'Beacon 1.4.0', files: { 'src/retry.js': 'export const delay = attempt => 0; // TODO: back off\n', '.github/workflows/ci.yml': CI_YML, 'package.json': '{ "name": "beacon", "version": "1.4.0" }\n', 'CHANGELOG.md': '## 1.4.0\n- First public release\n' } }], { collaborators: ['you'] });
+          H.tagRemote('beacon/beacon', 'v1.4.0');
+          H.issue('beacon/beacon', { title: 'Retries hammer the server', body: 'There is no delay between retries.', author: 'sam' });
+          const up = H.bare('beacon/beacon');
+          const fork = w.createRemoteRepo('jules', 'beacon', { forkOf: up.meta.url });
+          fork.refs = { ...up.refs };
+          fork.refs['refs/heads/fix-retry'] = up.refs['refs/heads/main'];
+          H.teammate('jules/beacon', { branch: 'fix-retry', files: { 'src/retry.js': 'export const delay = attempt => 100 * 2 ** attempt;\n', 'tests/retry.test.js': 'expect([0, 1, 2].map(delay)).toEqual([100, 200, 400]);\n' }, message: 'Retry with exponential backoff', author: { name: 'Jules Moreau', email: 'jules@example.net' } });
+          H.pr('beacon/beacon', { title: 'Retry with exponential backoff', head: 'fix-retry', headRepo: fork.meta.url, author: 'jules', body: 'Fixes #1. The delay doubles on each attempt: 100, 200, 400 ms.' });
+          H.cd('~');
+          H.run('git clone -q https://github.com/beacon/beacon.git');
+          H.cd('~/beacon');
+        },
+        suggestions: ['gh pr list', 'gh pr view 2'],
+        tasks: [
+          { title: 'Review PR #2: the description, the diff and the checks', solution: 'gh pr view 2 && gh pr diff 2 && gh pr checks 2', check: t => t.ran(/gh pr diff 2\b/) && t.ran(/gh pr checks 2\b/) },
+          { title: 'Try it on your machine before approving', solution: 'gh pr checkout 2 && npm test', check: t => t.ran(/gh pr checkout 2\b/) && t.ran(/npm (run )?test/) },
+          { title: 'Approve it', solution: 'gh pr review 2 --approve --body "Tested locally. Thanks, Jules!"', check: t => t.remote('beacon/beacon').meta.prs[0].reviews.some(r => r.author === 'you' && r.state === 'APPROVED') },
+          { title: 'Merge it as one commit, so issue #1 closes itself', solution: 'gh pr merge 2 --squash', check: t => { const b = t.remote('beacon/beacon'); return b.meta.prs[0].state === 'merged' && b.meta.prs[0].mergeMethod === 'squash' && b.meta.issues[0].state === 'closed'; } },
+          { title: 'Update your main and credit Jules in CHANGELOG.md under 1.5.0', solution: 'git switch main && git pull, add a "## 1.5.0" entry thanking @jules, commit', test: ['git switch main && git pull', { cmd: 'edit CHANGELOG.md', edit: '## 1.5.0\n- Retry with exponential backoff (#1), thanks @jules\n\n## 1.4.0\n- First public release\n' }, 'git commit -am "docs: changelog for 1.5.0"'], check: t => { const c = t.headFile('CHANGELOG.md') || ''; return t.branch() === 'main' && /1\.5\.0/.test(c) && /jules/i.test(c) && t.isAncestor(t.remote('beacon/beacon').meta.prs[0].mergedAs, t.headHash()); } },
+          { title: 'Tag v1.5.0, signed with an SSH key, and push main and the tag', solution: 'ssh-keygen -t ed25519 && git config --global gpg.format ssh && git config --global user.signingkey ~/.ssh/id_ed25519.pub && git tag -s v1.5.0 -m "Beacon 1.5.0" && git push origin main v1.5.0', check: t => { const b = t.remote('beacon/beacon'); const tag = b.refs['refs/tags/v1.5.0']; return !!tag && t.world.objects.get(tag).type === 'tag' && t.world.signatures.has(tag) && t.world.peel(tag) === b.refs['refs/heads/main'] && b.refs['refs/heads/main'] === t.ref('main'); } },
+          { title: 'Publish the GitHub release with notes', solution: 'gh release create v1.5.0 --title "Beacon 1.5.0" --notes "Retry with exponential backoff (#1). Thanks @jules!"', check: t => t.remote('beacon/beacon').meta.releases.some(r => r.tag === 'v1.5.0' && /jules/i.test(r.notes || '')) },
+        ],
+      },
+      quiz: [
+        { type: 'mc', q: 'A first-time contributor\'s PR is green. Why still check it out and test it locally?', choices: ['CI only runs what the workflow asks; you are checking it actually fixes the issue', 'GitHub requires it', 'To change the author', 'You cannot approve otherwise'], answer: 0, explain: 'Green CI is necessary, not sufficient.' },
+        { type: 'mc', q: 'Which part of the PR made issue #1 close on merge?', choices: ['"Fixes #1" in the description', 'The branch name', 'The label', 'The squash'], answer: 0, explain: 'Closing keywords in the PR description or commit message.' },
+        { type: 'type', q: 'Type the command that creates a signed, annotated tag v2.0.0 with the message "Release 2.0.0".', accept: ['git tag -s v2.0.0 -m "Release 2.0.0"'], model: 'git tag -s v2.0.0 -m "Release 2.0.0"', explain: '-s signs (and annotates) the tag.' },
+        { type: 'tf', q: 'Squash-merging the contributor\'s PR removes their authorship.', answer: false, explain: 'GitHub keeps the PR author as the author of the squashed commit.' },
+        { type: 'mc', q: 'Why credit contributors in the changelog?', choices: ['It thanks them publicly and encourages them to return', 'Git requires it', 'It closes issues', 'It signs the release'], answer: 0, explain: 'Healthy projects make contributors feel seen.' },
+      ],
+    },
+    {
+      id: 'upstream-contributor',
+      title: 'Trial: upstream contributor',
+      summary: 'Fork, fix with a sign-off, answer review with a fixup, rebase, update the PR and clean up.',
+      minutes: 30,
+      boss: true,
+      lab: {
+        cwd: '~',
+        panels: ['github', 'graph', 'files'],
+        setup(H) {
+          const w = H.world;
+          w.testRule = files => /n >= 10/.test(files['src/redirect.js'] || '') ? { ok: true, log: ['PASS redirect.test.js'] } : { ok: false, log: ['FAIL redirect.test.js', '  ✕ stops after 10 redirects (timed out)'] };
+          H.remote('tinyhttp', 'tinyhttp', [{ message: 'tinyhttp 2.0', files: { 'src/redirect.js': 'export function follow(res, n = 0) {\n  return res.redirect ? follow(next(res), n + 1) : res;\n}\n', 'CONTRIBUTING.md': '# Contributing\n\n- Sign off every commit (git commit -s).\n- One commit per fix.\n', 'tests/basic.test.js': 'expect(get("/")).toBeOk();\n' } }]);
+          w.labData = {};
+        },
+        events(ev, t) {
+          const up = t.remote('tinyhttp/tinyhttp');
+          if (ev.type === 'pr-created' && ev.url === up.meta.url && !t.world.labData.reviewed) {
+            t.world.labData.reviewed = true;
+            t.review('tinyhttp/tinyhttp', ev.number, 'CHANGES_REQUESTED', 'Thanks! Please add a test for the redirect limit.', 'mara');
+            t.teammate('tinyhttp/tinyhttp', { message: 'docs: add an FAQ', files: { 'FAQ.md': '# FAQ\n' }, author: { name: 'Mara Lind', email: 'mara@tinyhttp.example' } });
+            t.say('[GitHub] mara requested changes: "Thanks! Please add a test for the redirect limit."');
+          }
+          if (ev.type === 'pr-comment' && ev.url === up.meta.url && !t.world.labData.merged) {
+            const pr = up.meta.prs.find(p => p.number === ev.number);
+            const fork = t.world.remotes.get(pr.headRepo);
+            const head = fork.refs['refs/heads/' + pr.head];
+            const flat = t.world.readTreeFlat(t.world.commit(head).tree);
+            const one = revList(t.world, [head], [up.refs['refs/heads/main']]).length === 1;
+            if (flat.has('tests/redirect.test.js') && one && /Signed-off-by:/.test(t.world.commit(head).message)) {
+              t.world.labData.merged = true;
+              t.review('tinyhttp/tinyhttp', pr.number, 'APPROVED', 'Perfect, thank you!', 'mara');
+              t.mergePR('tinyhttp/tinyhttp', pr.number, 'squash');
+              t.say('[GitHub] mara approved and merged your pull request. Welcome, contributor!');
+            }
+          }
+        },
+        suggestions: ['gh repo fork tinyhttp/tinyhttp --clone'],
+        tasks: [
+          { title: 'Fork the project and clone your fork, with the original as upstream', solution: 'gh repo fork tinyhttp/tinyhttp --clone', check: t => !!t.repoAt('~/tinyhttp')?.config['remote.upstream.url'] },
+          { title: 'Fix it on a topic branch, in one signed-off commit', detail: 'Stop following redirects after 10 hops: `if (n >= 10) throw new Error("too many redirects");`', solution: 'cd tinyhttp && git switch -c fix-redirect-loop, edit src/redirect.js, git commit -s -am "fix: stop following redirects after 10 hops"', test: ['cd tinyhttp && git switch -c fix-redirect-loop', { cmd: 'edit src/redirect.js', edit: 'export function follow(res, n = 0) {\n  if (n >= 10) throw new Error("too many redirects");\n  return res.redirect ? follow(next(res), n + 1) : res;\n}\n' }, 'git commit -s -am "fix: stop following redirects after 10 hops"'], check: t => { const r = t.repoAt('~/tinyhttp'); if (!r?.refs['refs/heads/fix-redirect-loop']) return false; const c = revList(t.world, [r.refs['refs/heads/fix-redirect-loop']], [r.refs['refs/remotes/upstream/main']]); return c.length === 1 && /Signed-off-by: Dev Learner/.test(t.world.commit(c[0]).message) && /n >= 10/.test(t.fileAt('fix-redirect-loop', 'src/redirect.js', r) || ''); } },
+          { title: 'Push to your fork and open a pull request upstream', solution: 'git push -u origin fix-redirect-loop && gh pr create --fill', check: t => t.remote('tinyhttp/tinyhttp').meta.prs.some(p => p.author === 'you' && p.head === 'fix-redirect-loop') },
+          { title: 'Mara asked for a test: add it as a fixup commit', solution: 'add tests/redirect.test.js, then git add tests && git commit --fixup HEAD', test: [{ cmd: 'edit tests/redirect.test.js', edit: 'expect(() => follow(loop)).toThrow("too many redirects");\n' }, 'git add tests && git commit --fixup HEAD'], check: t => /^fixup! fix: stop following redirects/.test(t.head()?.message || '') },
+          { title: 'Upstream moved on: rebase onto it and fold the fixup in', hint: '`git fetch upstream`, then an interactive rebase with --autosquash.', solution: 'git fetch upstream && git rebase -i --autosquash upstream/main', test: ['git fetch upstream', { cmd: 'git rebase -i --autosquash upstream/main', edits: [x => x] }], check: t => { const r = t.repo; const c = revList(t.world, [t.headHash()], [t.ref('upstream/main')]); return !t.state() && c.length === 1 && /Signed-off-by: Dev Learner/.test(t.head().message) && !!t.headFile('tests/redirect.test.js') && !!t.headFile('FAQ.md') && !!r; } },
+          { title: 'Update the pull request safely, and tell Mara what changed', hint: 'range-diff shows what changed since her review; paste a summary as a PR comment.', solution: 'git range-diff upstream/main origin/fix-redirect-loop fix-redirect-loop && git push --force-with-lease && gh pr comment 1 --body "v2: added a test for the redirect limit; rebased on main"', check: t => t.ran(/git range-diff/) && t.remote('tinyhttp/tinyhttp').meta.prs[0].comments.some(c => c.author === 'you') && t.remote('you/tinyhttp')?.refs['refs/heads/fix-redirect-loop'] === t.ref('fix-redirect-loop') },
+          { title: "After the merge, sync your fork's main with upstream and delete your topic branch", solution: 'git switch main && git pull upstream main && git push origin main && git branch -D fix-redirect-loop', check: t => { const up = t.remote('tinyhttp/tinyhttp'); const fork = t.remote('you/tinyhttp'); return up.meta.prs[0].state === 'merged' && fork.refs['refs/heads/main'] === up.refs['refs/heads/main'] && !t.repoAt('~/tinyhttp').refs['refs/heads/fix-redirect-loop']; } },
+        ],
+      },
+      quiz: [
+        { type: 'mc', q: 'Where does your PR branch live when you contribute from a fork?', choices: ['On your fork (origin); the PR targets upstream', 'On upstream', 'Only on your laptop', 'In a gist'], answer: 0, explain: 'You push to the fork and ask upstream to pull.' },
+        { type: 'type', q: 'Type the commit command that adds your Signed-off-by line and commits all tracked changes with the message "fix: typo".', accept: ['git commit -s -am "fix: typo"', 'git commit -sam "fix: typo"', 'git commit -a -s -m "fix: typo"', 'git commit --signoff -am "fix: typo"'], model: 'git commit -s -am "fix: typo"', explain: '-s adds Signed-off-by: Your Name <email>.' },
+        { type: 'mc', q: 'Why `git commit --fixup HEAD` instead of a normal commit for review changes?', choices: ['autosquash folds it into the original commit later', 'It skips CI', 'It signs the commit', 'It notifies the reviewer'], answer: 0, explain: 'One commit per fix, as the project asked.' },
+        { type: 'tf', q: 'After rebasing your PR branch, plain git push will update it.', answer: false, explain: 'The history changed; use git push --force-with-lease.' },
+        { type: 'mc', q: 'Your PR was squash-merged. Why does `git branch -d fix-redirect-loop` refuse?', choices: ['The squashed commit is different, so git thinks the branch is unmerged; use -D', 'The branch is protected', 'You are on that branch', 'Upstream deleted it'], answer: 0, explain: 'Check the PR is merged, then delete with -D.' },
+      ],
+    },
+    {
+      id: 'history-surgeon',
+      title: 'Trial: history surgeon',
+      summary: 'A leaked key in every branch and tag, and a teammate\'s work in flight.',
+      minutes: 35,
+      boss: true,
+      lab: {
+        cwd: '~',
+        panels: ['github', 'graph', 'files'],
+        setup(H) {
+          const w = H.world;
+          const KEY = 'sk_' + 'live_' + '9TzQvault42Xk7Lm';
+          H.remote('you', 'vault-api', [
+            { message: 'Create vault API', files: { 'src/server.js': 'start()\n', 'config/settings.js': `export const stripeKey = "${KEY}";\n`, 'README.md': '# vault-api\n' } },
+            { message: 'Add accounts endpoint', files: { 'src/accounts.js': 'accounts()\n' } },
+          ], { collaborators: ['priya'] });
+          H.tagRemote('you/vault-api', 'v1.0.0');
+          const b = H.bare('you/vault-api');
+          b.refs['refs/heads/release/1.x'] = b.refs['refs/heads/main'];
+          H.teammate('you/vault-api', { branch: 'release/1.x', message: 'Release 1.0.1', files: { 'VERSION': '1.0.1\n' } });
+          H.teammate('you/vault-api', { message: 'Read the Stripe key from the environment', files: { 'config/settings.js': 'export const stripeKey = process.env.STRIPE_KEY;\n' } });
+          H.teammate('you/vault-api', { message: 'Add payouts', files: { 'src/payouts.js': 'payouts()\n' } });
+          b.refs['refs/heads/feature/refunds'] = b.refs['refs/heads/main'];
+          H.teammate('you/vault-api', { branch: 'feature/refunds', message: 'Refunds: model', files: { 'src/refunds.js': 'model()\n' }, author: PRIYA });
+          H.teammate('you/vault-api', { branch: 'feature/refunds', message: 'Refunds: API', files: { 'src/refunds.js': 'model()\napi()\n' }, author: PRIYA });
+          H.cd('~');
+          H.run('git clone -q https://github.com/you/vault-api.git priya-vault');
+          H.cd('~/priya-vault');
+          H.run('git switch -q feature/refunds');
+          H.commit('Refunds: email the customer', { 'src/refund-email.js': 'email()\n' }, { author: 'Priya Sharma <priya@example.com>' });
+          H.cd('~');
+          w.labData = { key: KEY };
+          H.shell.extraCommands.vault = (args, out, sh) => {
+            if (args[0] === 'rotate') { sh.world.labData.rotated = true; out.push('Revoked the leaked Stripe key. A new key is in the production secret store.'); return 0; }
+            out.push('usage: vault rotate');
+            return 1;
+          };
+        },
+        suggestions: ['vault rotate'],
+        tasks: [
+          { title: 'Stop the bleeding: revoke the key', solution: 'vault rotate', check: t => !!t.world.labData.rotated },
+          { title: 'In a fresh clone at ~/scrub, give every remote branch a local branch', hint: 'filter-repo rewrites local branches and tags only.', solution: 'git clone https://github.com/you/vault-api.git scrub && cd scrub && git branch release/1.x origin/release/1.x && git branch feature/refunds origin/feature/refunds', check: t => { const r = t.repoAt('~/scrub'); return !!r && ['main', 'release/1.x', 'feature/refunds'].every(x => r.refs['refs/heads/' + x]); } },
+          { title: 'Replace the key with ***REMOVED*** in every commit of every branch and tag', solution: 'echo "<the key>==>***REMOVED***" > ~/leaked.txt && git filter-repo --replace-text ~/leaked.txt', test: [t => `echo "${t.world.labData.key}==>***REMOVED***" > ~/leaked.txt && git filter-repo --replace-text ~/leaked.txt`], check: t => { const r = t.repoAt('~/scrub'); return !!r && !blobsOf(t.world, allTipsOf(r)).some(c => typeof c === 'string' && c.includes(t.world.labData.key)) && ['main', 'release/1.x', 'feature/refunds'].every(x => r.refs['refs/heads/' + x]) && !!r.refs['refs/tags/v1.0.0']; } },
+          { title: 'Push every branch and tag back', solution: 'git remote add origin https://github.com/you/vault-api.git && git push --force --all && git push --force --tags', check: t => { const b = t.remote('you/vault-api'); return !blobsOf(t.world, Object.values(b.refs).map(h => t.world.peel(h))).some(c => typeof c === 'string' && c.includes(t.world.labData.key)); } },
+          { title: 'Turn on push protection', solution: 'gh repo edit --enable-secret-scanning --enable-secret-scanning-push-protection', check: t => !!t.remote('you/vault-api').meta.pushProtection },
+          { title: "Move Priya's unpushed commit onto the rewritten feature/refunds, and push it", hint: 'In ~/priya-vault: fetch, then `git rebase --onto origin/feature/refunds HEAD~1` replays only her commit.', solution: 'cd ~/priya-vault && git fetch && git rebase --onto origin/feature/refunds HEAD~1 && git push', check: t => { const b = t.remote('you/vault-api'); const tip = b.refs['refs/heads/feature/refunds']; return !!tip && /email the customer/.test(t.world.commit(tip).message) && !blobsOf(t.world, [tip]).some(c => typeof c === 'string' && c.includes(t.world.labData.key)); } },
+          { title: 'Tell the team to delete their clones and clone again', solution: 'gh issue create --title "History rewritten: please re-clone vault-api" --body "A leaked key was removed from all history. Delete your clone and clone again; do not pull."', check: t => t.remote('you/vault-api').meta.issues.some(i => /clone/i.test(i.title + i.body)) },
+        ],
+      },
+      quiz: [
+        { type: 'mc', q: 'Why create local branches for every remote branch before running filter-repo?', choices: ['It rewrites local branches and tags; remote-tracking refs are dropped', 'filter-repo needs at least three branches', 'To make the clone fresh', 'It is faster'], answer: 0, explain: 'Otherwise those branches keep the secret and are never pushed clean.' },
+        { type: 'mc', q: "What does `git rebase --onto origin/feature/refunds HEAD~1` do in Priya's clone?", choices: ['Replays only her last commit onto the rewritten branch', 'Replays the whole branch', 'Deletes her commit', 'Merges main'], answer: 0, explain: '--onto <new base> <old base>: everything after the old base moves.' },
+        { type: 'tf', q: 'The v1.0.0 tag is safe because it was created before the key was "removed" from main.', answer: false, explain: 'The tag points at a commit that contains the key. Rewrite and force-push tags too.' },
+        { type: 'order', q: 'Order the surgery.', items: ['Revoke the key', 'Fresh clone with a local branch for every remote branch', 'git filter-repo --replace-text', 'Force-push all branches and tags', 'Turn on push protection', 'Ask everyone to re-clone'], explain: 'Bleeding first, then the operation, then aftercare.' },
+        { type: 'mc', q: 'A teammate pulls into their old clone after the rewrite. What happens?', choices: ['The old history, key included, is merged back', 'Their clone is cleaned', 'git refuses', 'Nothing'], answer: 0, explain: 'Re-clone, or move unpushed work with rebase --onto.' },
       ],
     },
     {

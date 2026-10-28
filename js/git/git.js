@@ -560,9 +560,12 @@ function cleanMessage(text) {
 commands.commit = (ctx, args) => {
   const repo = needWorkTree(ctx);
   const o = parseOpts(args, {
-    bool: ['-a', '--all', '--amend', '--no-edit', '--allow-empty', '-q', '--quiet', '-v', '--no-verify', '-n'],
-    val: ['-m', '--message', '-F', '--author', '-C', '--fixup'],
+    bool: ['-a', '--all', '--amend', '--no-edit', '--allow-empty', '-q', '--quiet', '-v', '--no-verify', '-n', '--reset-author', '-s', '--signoff'],
+    val: ['-m', '--message', '-F', '--author', '-C', '--fixup', '--trailer'],
   });
+  const trailers = args.flatMap((a, i) => (a === '--trailer' ? [args[i + 1]] : a.startsWith('--trailer=') ? [a.slice(10)] : [])).filter(Boolean).map(t => t.replace(/^([^:=]+)[:=]\s*/, '$1: '));
+  if (o['-s'] || o['--signoff']) { const id = identity(repo); trailers.push(`Signed-off-by: ${id.name} <${id.email}>`); }
+  const withTrailers = m => (trailers.length && m && !trailers.every(x => m.includes(x)) ? m.replace(/\s+$/, '') + (/\n\n[\w-]+: .+$/.test(m.trim()) ? '\n' : '\n\n') + trailers.join('\n') : m);
   const w = ctx.world;
   requireIdentity(repo);
   if (repo.conflicts.size) {
@@ -604,7 +607,8 @@ commands.commit = (ctx, args) => {
     return 1;
   }
 
-  const finish = (message, c2 = ctx) => {
+  const finish = (rawMessage, c2 = ctx) => {
+    const message = withTrailers(rawMessage);
     if (!message) { c2.out.push('Aborting commit due to empty commit message.'); return 1; }
     if (repo.hooks['pre-commit'] && !o['--no-verify'] && !o['-n'] && ctx.runHook) {
       const code = ctx.runHook(repo, 'pre-commit', c2);
@@ -615,7 +619,7 @@ commands.commit = (ctx, args) => {
       if (code !== 0) return 1;
     }
     let author;
-    if (amend && !o['--author']) author = w.commit(head).author;
+    if (amend && !o['--author'] && !o['--reset-author']) author = w.commit(head).author;
     if (o['--author']) {
       const m = o['--author'].match(/^(.*?)\s*<(.+)>$/);
       if (!m) throw new GitError(`fatal: --author '${o['--author']}' is not 'Name <email>' and matches no existing author`);
