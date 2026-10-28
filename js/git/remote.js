@@ -69,7 +69,7 @@ export function remoteCommands({ parseOpts, needRepo, needWorkTree, mergeInto, c
   cmds.remote = (ctx, args) => {
     const repo = needRepo(ctx);
     const sub = args[0] && !args[0].startsWith('-') ? args[0] : null;
-    const o = parseOpts(sub ? args.slice(1) : args, { bool: ['-v', '--verbose', '-f'], val: ['-t'] });
+    const o = parseOpts(sub ? args.slice(1) : args, { bool: ['-v', '--verbose', '-f', '--add'], val: ['-t'] });
     const names = remoteNames(repo);
     if (!sub) {
       for (const n of names) {
@@ -135,6 +135,15 @@ export function remoteCommands({ parseOpts, needRepo, needWorkTree, mergeInto, c
           if (b !== 'HEAD' && !bare.refs['refs/heads/' + b]) ctx.out.push(`    refs/remotes/${name}/${b} stale (use 'git remote prune' to remove)`);
         }
       } catch (e) { ctx.out.push(`  (could not reach ${url})`); }
+      return 0;
+    }
+    if (sub === 'set-branches') {
+      const add = args.includes('--add');
+      const [name, ...branches] = args.slice(1).filter(a => a !== '--add');
+      if (!names.includes(name)) throw new GitError(`error: No such remote '${name}'`, 2);
+      const specs = branches.map(b => `+refs/heads/${b}:refs/remotes/${name}/${b}`);
+      const prev = add ? String(repo.config[`remote.${name}.fetch`] || '').split('\n').filter(Boolean) : [];
+      repo.config[`remote.${name}.fetch`] = [...new Set([...prev, ...specs])].join('\n');
       return 0;
     }
     if (sub === 'prune') return cmds.fetch(ctx, [o._[0] || 'origin', '--prune']);
@@ -329,7 +338,12 @@ export function remoteCommands({ parseOpts, needRepo, needWorkTree, mergeInto, c
           if (r?.reject) { rejected = r.reject; break; }
           if (r?.info) remoteInfo.push(...r.info);
         }
-        if (rejected) { results.push(...rejected.map(l => (l.startsWith(' !') ? l : 'remote: ' + l)), ` ! [remote rejected] ${src} -> ${dst} (${isTag ? 'pre-receive hook declined' : 'push declined due to repository rule violations'})`); failed = true; continue; }
+        if (rejected) {
+          results.push(...rejected.map(l => (l.startsWith(' !') ? l : 'remote: ' + l)), ` ! [remote rejected] ${src} -> ${dst} (${isTag ? 'pre-receive hook declined' : 'push declined due to repository rule violations'})`);
+          failed = true;
+          w.emit({ type: 'push-rejected', url: bare.meta.url, branch: dst, reason: rejected.find(l => /GH\d{3}/.test(l)) || rejected[0] });
+          continue;
+        }
       }
       if (old && !isTag && !isAncestor(w, old, commitHash)) {
         const lease = o['--force-with-lease'];

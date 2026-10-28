@@ -1,4 +1,4 @@
-// Realm 12 · Hero Trials: disaster recovery and the final boss.
+// Realm 15 · Hero Trials: disaster recovery and the final boss.
 
 import { todoPlan } from './r05-rewriting.js';
 
@@ -18,7 +18,7 @@ function bareCommit(world, bare, { parents, files, remove = [], message, author 
 
 export default {
   id: 'hero-trials',
-  n: 12,
+  n: 15,
   title: 'Hero Trials',
   tagline: 'Rescue any situation, then prove everything in the final trial',
   badge: 'Git Hero',

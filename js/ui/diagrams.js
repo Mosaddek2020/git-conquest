@@ -461,6 +461,125 @@ D['cd-pipeline'] = () => {
   return figure(d, 'Continuous delivery: every change is proven and deployable; a person (or a rule) decides when it reaches production.');
 };
 
+D['signed-commits'] = () => {
+  const d = mk(720, 250, 'Signing a commit with an SSH key and GitHub verifying it');
+  d.box(20, 40, 200, 150, 'Your laptop', { color: 'main', align: 'start' });
+  d.box(36, 80, 168, 46, 'private key', { sub: 'signs the commit', color: 'bad', fill: 's2', titleSize: 13 });
+  d.box(36, 134, 168, 46, 'commit + signature', { color: 'main', fill: 's2', titleSize: 12.5 });
+  d.arrow(222, 157, 300, 157, { color: 'main', label: 'git push' });
+  d.box(304, 40, 400, 150, 'GitHub', { color: 'remote', align: 'start' });
+  d.box(320, 80, 170, 46, 'signing key (public)', { sub: 'gh ssh-key add --type signing', color: 'ok', fill: 's2', titleSize: 12, subSize: 10.5 });
+  d.box(320, 134, 170, 46, 'email matches account?', { color: 'info', fill: 's2', titleSize: 12 });
+  d.box(520, 100, 168, 60, 'Verified', { sub: 'or: Unverified', color: 'ok', titleSize: 16 });
+  d.arrow(492, 103, 518, 120, { color: 'ok' });
+  d.arrow(492, 157, 518, 142, { color: 'ok' });
+  d.text(360, 228, 'Anyone can type any name into user.name. Only the holder of the private key can produce the signature.', { size: 12.5, color: 'muted' });
+  return figure(d, 'A signature ties a commit to a key you control; GitHub shows Verified when that key is registered to your account.');
+};
+
+D['line-endings'] = () => {
+  const d = mk(720, 230, 'Line endings normalised by .gitattributes');
+  d.box(20, 50, 190, 90, 'Windows editor', { sub: 'const a = 1;\\r\\n', color: 'feat', subSize: 12 });
+  d.box(265, 50, 190, 90, 'repository', { sub: 'const a = 1;\\n\n(always LF)', color: 'main', subSize: 12 });
+  d.box(510, 50, 190, 90, 'Mac / Linux editor', { sub: 'const a = 1;\\n', color: 'info', subSize: 12 });
+  d.arrow(212, 80, 262, 80, { color: 'main', label: 'add: CRLF→LF', size: 11 });
+  d.arrow(262, 112, 212, 112, { color: 'muted', label: 'checkout', size: 11, dy: 18 });
+  d.arrow(458, 95, 506, 95, { color: 'muted' });
+  d.box(180, 168, 360, 44, '.gitattributes:  * text=auto eol=lf', { color: 'accent', fill: 's2', titleSize: 13 });
+  return figure(d, 'Without a rule, each editor commits its own line endings and every line looks changed. With one, the repository always stores LF.');
+};
+
+D['lfs-pointer'] = () => {
+  const d = mk(720, 240, 'Git LFS stores a small pointer in git and the big file on an LFS server');
+  d.box(20, 40, 200, 160, 'working tree', { color: 'main', align: 'start' });
+  d.box(36, 84, 168, 60, 'intro.mp4', { sub: '180 MB video', color: 'feat', fill: 's2' });
+  d.arrow(222, 114, 286, 90, { color: 'main', label: 'clean' });
+  d.box(290, 40, 200, 100, 'git repository', { color: 'remote', align: 'start' });
+  d.box(304, 70, 172, 58, 'pointer, 132 bytes', { sub: 'oid sha256:4d7a…  size …', color: 'info', fill: 's2', titleSize: 12.5, subSize: 10.5 });
+  d.box(290, 156, 200, 60, 'LFS store', { sub: 'the real 180 MB', color: 'accent' });
+  d.arrow(222, 150, 286, 184, { color: 'accent', label: 'upload', dy: 18 });
+  d.text(600, 92, 'git history stays small:', { size: 12.5, color: 'muted' });
+  d.text(600, 110, 'clones fetch pointers,', { size: 12.5, color: 'muted' });
+  d.text(600, 128, 'then only the versions', { size: 12.5, color: 'muted' });
+  d.text(600, 146, 'you check out.', { size: 12.5, color: 'muted' });
+  return figure(d, 'The clean filter swaps the file for a pointer on git add; the smudge filter swaps it back on checkout.');
+};
+
+D['clone-shapes'] = () => {
+  const d = mk(720, 270, 'Full, shallow, partial and sparse clones');
+  const rows = [['full clone', 'every commit, every file version', 'main', 8, 8], ['--depth 1', 'only the newest commit', 'info', 1, 8], ['--filter=blob:none', 'all commits, file contents on demand', 'remote', 8, 3], ['--sparse + set dir', 'all history, only some folders on disk', 'feat', 8, 8]];
+  rows.forEach(([t, sub, c, n], i) => {
+    const y = 40 + i * 56;
+    d.text(20, y + 6, t, { anchor: 'start', font: 'mono', weight: 600, size: 13 });
+    for (let k = 0; k < 8; k++) d.commit(220 + k * 34, y, { color: k >= 8 - n ? c : 'muted', hollow: k < 8 - n || (i === 2 && k < 7), r: 7 });
+    d.text(510, y + 5, sub, { anchor: 'start', size: 12.5, color: 'muted' });
+  });
+  d.text(360, 258, 'Hollow = not downloaded. Pick the shape that matches the job: CI builds rarely need history; humans usually do.', { size: 12, color: 'muted' });
+  return figure(d, 'Big repositories do not have to be slow: ask for less history, fewer file versions, or fewer folders.');
+};
+
+D['merge-queue'] = () => {
+  const d = mk(720, 260, 'A merge queue tests each pull request on top of the ones ahead of it');
+  d.line(30, 200, 690, 200, { color: 'main', width: 3 });
+  d.commit(60, 200);
+  d.tag(30, 230, 'main', { color: 'main' });
+  d.box(130, 40, 170, 70, 'PR #1', { sub: 'green on its own', color: 'feat' });
+  d.box(330, 40, 170, 70, 'PR #2', { sub: 'green on its own', color: 'feat' });
+  d.box(130, 120, 170, 52, 'main + #1', { sub: 'CI ✓ → merged', color: 'ok', fill: 's2', subSize: 11 });
+  d.box(330, 120, 170, 52, 'main + #1 + #2', { sub: 'CI ✗ → removed', color: 'bad', fill: 's2', subSize: 11 });
+  d.arrow(215, 112, 215, 118, { color: 'ok' });
+  d.arrow(415, 112, 415, 118, { color: 'bad' });
+  d.commit(215, 200, { color: 'ok', label: '#1', below: true });
+  d.arrow(215, 174, 215, 190, { color: 'ok' });
+  d.text(600, 70, 'Each PR passed CI', { size: 12.5, color: 'muted' });
+  d.text(600, 88, 'alone. Together they', { size: 12.5, color: 'muted' });
+  d.text(600, 106, 'break. The queue', { size: 12.5, color: 'muted' });
+  d.text(600, 124, 'notices before main', { size: 12.5, color: 'muted' });
+  d.text(600, 142, 'does.', { size: 12.5, color: 'muted' });
+  return figure(d, 'CI on a pull request tests it against the old main. The queue tests it against the main it will actually land on.');
+};
+
+D['patch-flow'] = () => {
+  const d = mk(720, 200, 'Contributing by email: format-patch, send, am');
+  const s = [['commits', 'on your branch', 'feat'], ['git format-patch', '0001-…patch files', 'info'], ['mailing list', 'reviewed in replies', 'remote'], ['git am', 'maintainer applies', 'main'], ['commits', 'author kept', 'ok']];
+  s.forEach(([t, sub, c], i) => { const x = 14 + i * 142; d.box(x, 50, 126, 80, t, { sub, color: c, subSize: 11, titleSize: 13 }); if (i) d.arrow(x - 14, 90, x - 2, 90, { color: 'muted' }); });
+  d.text(360, 170, 'The Linux kernel, git itself and many long-lived projects still work this way.', { size: 12.5, color: 'muted' });
+  return figure(d, 'A patch file carries the author, date, message and diff, so the maintainer’s commit credits you.');
+};
+
+D['submodule-pointer'] = () => {
+  const d = mk(720, 230, 'A submodule is a pointer to one commit of another repository');
+  d.box(20, 30, 330, 170, 'app (superproject)', { color: 'main', align: 'start' });
+  d.box(40, 74, 140, 40, 'index.js', { color: 'line', fill: 's2', titleSize: 12.5 });
+  d.box(40, 124, 290, 56, 'libs/ui → commit 4d7a21f', { sub: '.gitmodules says where to clone it from', color: 'accent', fill: 's2', titleSize: 12.5, subSize: 11 });
+  d.box(420, 30, 280, 170, 'ui (its own repository)', { color: 'remote', align: 'start' });
+  [470, 540, 610, 670].forEach((x, i) => d.commit(x, 140, { color: i === 1 ? 'accent' : 'remote', label: i === 1 ? '4d7a21f' : null }));
+  d.line(470, 140, 670, 140, { color: 'remote', width: 2 });
+  d.arrow(332, 152, 532, 144, { color: 'accent', dash: '5 4' });
+  d.tag(640, 175, 'main', { color: 'remote', anchor: 'middle' });
+  return figure(d, 'The superproject records exactly which commit of the library it was tested with, not "whatever is newest".');
+};
+
+D['rerere'] = () => {
+  const d = mk(720, 200, 'rerere records how you resolved a conflict and replays it');
+  d.box(20, 50, 190, 90, 'conflict', { sub: 'first time:\nyou resolve it by hand', color: 'bad' });
+  d.box(265, 50, 190, 90, 'rr-cache', { sub: 'preimage → resolution', color: 'accent' });
+  d.box(510, 50, 190, 90, 'same conflict', { sub: 'next merge or rebase:\nresolved for you', color: 'ok' });
+  d.arrow(212, 95, 262, 95, { color: 'accent', label: 'record' });
+  d.arrow(458, 95, 506, 95, { color: 'ok', label: 'replay' });
+  d.text(360, 176, 'REuse REcorded REsolution: turn it on once with git config --global rerere.enabled true.', { size: 12.5, color: 'muted' });
+  return figure(d, 'Long-lived branches hit the same conflict again and again. rerere means you only solve it once.');
+};
+
+D['ai-verify'] = () => {
+  const d = mk(720, 220, 'AI proposes, tools and people verify');
+  const s = [['you ask', 'with real context', 'info'], ['AI proposes', 'message, fix, resolution', 'remote'], ['tools check', 'diff, tests, scanners', 'main'], ['you decide', 'accept, edit, reject', 'accent']];
+  s.forEach(([t, sub, c], i) => { const x = 20 + i * 176; d.box(x, 50, 150, 84, t, { sub, color: c, subSize: 11.5, titleSize: 15 }); if (i) d.arrow(x - 24, 92, x - 4, 92, { color: 'muted' }); });
+  d.path('M620 140 Q620 190 360 190 Q95 190 95 140', { color: 'muted', dash: '5 4', width: 1.8 });
+  d.text(360, 208, 'You stay the author: your name is on the commit, whoever typed it.', { size: 12.5, color: 'muted' });
+  return figure(d, 'An assistant is fast and confident, sometimes wrongly. The verify step is not optional.');
+};
+
 export function renderDiagram(name) {
   const fn = D[name];
   if (!fn) return h('div', { class: 'figure' }, `Missing diagram: ${name}`);

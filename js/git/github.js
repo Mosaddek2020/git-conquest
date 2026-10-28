@@ -412,6 +412,19 @@ export function runGh(ctx, args, git) {
       }
       return 0;
     }
+    if (sub === 'edit') {
+      const o = ghOpts(rest, { bool: ['--enable-secret-scanning', '--enable-secret-scanning-push-protection', '--disable-secret-scanning-push-protection'], val: ['--description', '-d', '--default-branch', '--visibility'] });
+      const { bare } = o._[0] ? { bare: w.remotes.get(`https://github.com/${o._[0]}.git`) } : contextRepo(ctx, { upstreamFirst: false });
+      if (!bare) throw new GitError(`GraphQL: Could not resolve to a Repository with the name '${o._[0]}'. (repository)`, 1);
+      if (bare.meta.owner !== me && !bare.meta.collaborators.includes(me)) throw new GitError('HTTP 403: Must have admin rights to Repository.', 1);
+      if (o['--description'] || o['-d']) bare.meta.description = o['--description'] || o['-d'];
+      if (o['--enable-secret-scanning']) bare.meta.secretScanning = true;
+      if (o['--enable-secret-scanning-push-protection']) { bare.meta.secretScanning = true; bare.meta.pushProtection = true; }
+      if (o['--disable-secret-scanning-push-protection']) bare.meta.pushProtection = false;
+      w.emit({ type: 'repo-edit', url: bare.meta.url, pushProtection: !!bare.meta.pushProtection });
+      out.push(`✓ Edited repository ${bare.meta.owner}/${bare.meta.name}`);
+      return 0;
+    }
     if (sub === 'view') {
       const o = ghOpts(rest, { bool: ['--web', '-w'], val: [] });
       const bare = o._[0] ? w.remoteByUrl(o._[0]) : contextRepo(ctx, { upstreamFirst: false }).bare;

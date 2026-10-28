@@ -11,6 +11,8 @@ import openSource from './r08-open-source.js';
 import workflows from './r09-workflows.js';
 import powerTools from './r10-power-tools.js';
 import automation from './r11-automation.js';
-import heroTrials from './r12-hero-trials.js';
+import scaleTrust from './r12-scale-trust.js';
+import maintainer from './r13-maintainer.js';
+import heroTrials from './r15-hero-trials.js';
 
-export const realms = [basecamp, firstCommits, timeTravel, branching, merging, rewriting, remotes, github, openSource, workflows, powerTools, automation, heroTrials];
+export const realms = [basecamp, firstCommits, timeTravel, branching, merging, rewriting, remotes, github, openSource, workflows, powerTools, automation, scaleTrust, maintainer, heroTrials];

@@ -133,6 +133,30 @@ export class GitHubView {
           h('span', { class: 'meta' }, `${c.message.split('\n')[0]} · ${c.author.name} · ${relativeTime(c.committer.time, w.time)}`, githubVerified(w, hh) ? h('span', { class: 'pill pill-ok', style: { marginLeft: '6px' } }, 'Verified') : null));
       })) : h('div', { class: 'gh-empty' }, 'Empty repository. Push a branch to it: git push -u origin main')));
 
+    // branch protection settings for the default branch (what Settings → Branches shows to admins)
+    const me = w.github.user;
+    if (def && bare.refs['refs/heads/' + def] && (meta.owner === me || meta.collaborators.includes(me))) {
+      const rule = meta.protected?.[def] || {};
+      const opts = [['requirePR', 'Require a pull request before merging'], ['requiredReviews', 'Require 1 approving review'], ['requireCodeOwners', 'Require review from Code Owners'], ['requireChecks', 'Require status checks to pass'], ['requireSigned', 'Require signed commits'], ['mergeQueue', 'Require merge queue']];
+      const box = h('details', { class: 'gh-protect' }, h('summary', {}, `Settings · branch protection for ${def}`));
+      for (const [key, label] of opts) {
+        const id = `gh-prot-${key}`;
+        const input = h('input', { type: 'checkbox', id, checked: !!rule[key], onchange: e => {
+          const next = { ...(meta.protected?.[def] || {}) };
+          if (key === 'requiredReviews') next.requiredReviews = e.target.checked ? 1 : 0; else next[key] = e.target.checked;
+          if (key === 'requireCodeOwners' && e.target.checked && !next.requirePR) next.requirePR = true;
+          meta.protected = meta.protected || {};
+          if (Object.values(next).some(Boolean)) meta.protected[def] = next; else delete meta.protected[def];
+          w.emit({ type: 'protection-changed', url: meta.url, branch: def, key, value: e.target.checked });
+          this.onAction?.(`Branch protection for ${def}: ${label.toLowerCase()} ${e.target.checked ? 'on' : 'off'}`);
+          this.render(repo, shell);
+        } });
+        box.append(h('label', { for: id, class: 'gh-toggle' }, input, h('span', {}, label)));
+      }
+      if (Object.values(rule).some(Boolean)) box.open = true;
+      this.el.append(h('section', { class: 'gh-section' }, box));
+    }
+
     // PRs
     const prs = meta.prs.slice().reverse();
     this.el.append(h('section', { class: 'gh-section' }, h('h5', {}, `Pull requests (${prs.filter(p => p.state === 'open').length} open)`),

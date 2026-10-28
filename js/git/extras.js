@@ -19,6 +19,8 @@ const cfg = (repo, key) => (repo && repo.config[key] !== undefined ? repo.config
 const truthy = v => ['true', 'yes', 'on', '1'].includes(String(v).toLowerCase());
 const home = (w, p) => (p.startsWith('~/') ? w.home + p.slice(1) : p);
 const pl = (n, w, p = w + 's') => `${n} ${n === 1 ? w : p}`;
+// a path argument: absolute, ~-relative or relative to the command's directory
+const pathIn = (ctx, p) => normPath(p.startsWith('/') ? p : p.startsWith('~') ? home(ctx.world, p) : ctx.cwd + '/' + p);
 
 // ============================================================================
 // signing
@@ -209,11 +211,12 @@ pushGuards.push(({ world, bare, ref, newCommits }) => {
 // history rewriting shared by `git lfs migrate` and `git filter-repo`
 // ============================================================================
 
-function rewriteHistory(w, repo, refNames, mapTree, { pruneEmpty = false, mapMessage = m => m } = {}) {
+function rewriteHistory(w, repo, refNames, mapTree, { pruneEmpty = false, mapMessage = m => m, keep = null } = {}) {
   const tips = refNames.map(r => w.peel(repo.refs[r])).filter(h => w.objects.get(h)?.type === 'commit');
   const commits = revList(w, tips).reverse();
   const map = new Map();
   for (const h of commits) {
+    if (keep?.has(h)) { map.set(h, h); continue; }
     const c = w.commit(h);
     const parents = [...new Set(c.parents.map(p => (map.has(p) ? map.get(p) : p)).filter(Boolean))];
     const flat = mapTree(w.readTreeFlat(c.tree), c, h);
@@ -366,6 +369,8 @@ commands.lfs = (ctx, args) => {
     if (!lfsInstalled(w)) throw new GitError('Error: Git LFS is not installed: run git lfs install first', 2);
     const res = computeStatus(repo);
     if (res.staged.length || res.unstaged.length) throw new GitError('Error: working tree has uncommitted changes; commit or stash them first', 2);
+    // like git-lfs, leave commits that are already on a remote alone unless --everything
+    const pushed = opts.everything ? null : new Set(revList(w, Object.entries(repo.refs).filter(([r]) => r.startsWith('refs/remotes/')).map(([, h]) => h)));
     const res2 = rewriteHistory(w, repo, refs, (flat) => {
       let touched = false;
       for (const [p, b] of [...flat]) {
@@ -379,8 +384,9 @@ commands.lfs = (ctx, args) => {
         if (touched) flat.set('.gitattributes', w.writeBlob(text));
       }
       return flat;
-    });
-    out.push('migrate: Sorting commits: ..., done.', `migrate: Rewriting commits: 100% (${res2.commits.length}/${res2.commits.length}), done.`);
+    }, { keep: pushed });
+    const rewritten = res2.commits.filter(h => !pushed?.has(h)).length;
+    out.push('migrate: Sorting commits: ..., done.', `migrate: Rewriting commits: 100% (${rewritten}/${rewritten}), done.`);
     for (const [r, a, b] of res2.changed) out.push(`  ${r.replace(/^refs\/(heads|tags)\//, '').padEnd(10)}${shortHash(a)} -> ${shortHash(b)}`);
     out.push('migrate: Updating refs: ..., done.', 'migrate: checkout: ..., done.');
     if (headRef(repo)) logRef(repo, 'HEAD', null, headCommit(repo), 'lfs migrate');
@@ -521,7 +527,7 @@ commands['filter-repo'] = (ctx, args) => {
   }
   let rules = [];
   if (o.replace) {
-    const text = w.files.get(normPath(o.replace.startsWith('/') ? o.replace : ctx.cwd + '/' + home(w, o.replace)));
+    const text = w.files.get(pathIn(ctx, o.replace));
     if (text === undefined) throw new GitError(`filter-repo: error: ${o.replace}: No such file or directory`, 1);
     rules = text.split('\n').filter(l => l.trim()).map(l => {
       const [pat, repl = '***REMOVED***'] = l.split('==>');
@@ -858,7 +864,7 @@ commands['format-patch'] = (ctx, args) => {
     files.push({ name, text });
   });
   if (o['--stdout']) { for (const f of files) ctx.out.push(...splitLines(f.text)); return 0; }
-  const base = normPath(dir ? (dir.startsWith('/') ? dir : ctx.cwd + '/' + home(w, dir)) : ctx.cwd);
+  const base = dir ? pathIn(ctx, dir) : ctx.cwd;
   w.dirs.add(base);
   for (const f of files) { w.writeFile(base + '/' + f.name, f.text); ctx.out.push((dir ? dir.replace(/\/$/, '') + '/' : '') + f.name); }
   w.emit({ type: 'format-patch', count: files.length, names: files.map(f => f.name) });
@@ -949,7 +955,7 @@ commands.apply = (ctx, args) => {
   const w = ctx.world;
   const o = parseOpts(args, { bool: ['--check', '--stat', '--index', '--cached', '-R', '--reverse', '-v', '--3way', '-3'] });
   const name = o._[0];
-  const text = name ? w.files.get(normPath(ctx.cwd + '/' + name)) : ctx.stdin;
+  const text = name ? w.files.get(pathIn(ctx, name)) : ctx.stdin;
   if (text === undefined || text === null) throw new GitError(`error: can't open patch '${name}': No such file or directory`);
   const files = parseMbox(text).flatMap(m => m.files);
   if (o['--stat']) { for (const f of files) { const add = f.hunks.flatMap(h => h.lines).filter(l => l[0] === '+').length, del = f.hunks.flatMap(h => h.lines).filter(l => l[0] === '-').length; ctx.out.push(` ${f.path} | ${add + del} ${C.green('+'.repeat(add))}${C.red('-'.repeat(del))}`); } return 0; }
@@ -1063,7 +1069,7 @@ commands.am = (ctx, args) => {
   let text = '';
   if (o._.length) {
     for (const f of o._) {
-      const c = w.files.get(normPath(ctx.cwd + '/' + home(w, f)));
+      const c = w.files.get(pathIn(ctx, f));
       if (c === undefined) throw new GitError(`fatal: could not open '${f}' for reading: No such file or directory`);
       text += c + (c.endsWith('\n') ? '' : '\n');
     }
@@ -1073,6 +1079,33 @@ commands.am = (ctx, args) => {
   if (!msgs.length) throw new GitError('Patch format detection failed.', 128);
   repo.state = { type: 'am', msgs, next: 0, orig: headCommit(repo), signoff: !!(o['-s'] || o['--signoff']), threeWay: !!(o['-3'] || o['--3way']) };
   return amRun(ctx, repo);
+};
+
+// a pretend mailing list: patches land in world.mailbox
+commands['send-email'] = (ctx, args) => {
+  const w = ctx.world;
+  const o = { to: [], cc: [], files: [] };
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i];
+    const val = () => (a.includes('=') ? a.slice(a.indexOf('=') + 1) : args[++i]);
+    if (a === '--to' || a.startsWith('--to=')) o.to.push(val());
+    else if (a === '--cc' || a.startsWith('--cc=')) o.cc.push(val());
+    else if (a === '--annotate' || a === '--confirm=never' || a === '--quiet') continue;
+    else if (a.startsWith('-')) throw new GitError(`Unknown option: ${a.replace(/^-+/, '')}`, 1);
+    else o.files.push(a);
+  }
+  if (!o.files.length) throw new GitError('No patch files specified!', 1);
+  if (!o.to.length) throw new GitError('fatal: no recipients (use --to)', 1);
+  w.mailbox = w.mailbox || [];
+  for (const f of o.files) {
+    const text = w.files.get(pathIn(ctx, f));
+    if (text === undefined) throw new GitError(`fatal: ${f}: No such file or directory`, 1);
+    const subject = (text.match(/^Subject: (.*)$/m) || [, f])[1];
+    w.mailbox.push({ to: o.to, cc: o.cc, subject, text, time: w.time });
+    ctx.out.push(`OK. Log says:`, `Sendmail: /usr/sbin/sendmail -i ${o.to.join(' ')}`, `From: ${identity(ctx.repo || { world: w, config: {} }).name} <${identity(ctx.repo || { world: w, config: {} }).email}>`, `To: ${o.to.join(', ')}`, `Subject: ${subject}`, '', 'Result: OK');
+  }
+  w.emit({ type: 'send-email', count: o.files.length, to: o.to });
+  return 0;
 };
 
 // ============================================================================
@@ -1108,7 +1141,7 @@ commands.notes = (ctx, args) => {
   const o = parseOpts(args.filter(a => a !== sub), { bool: ['-f', '--force'], val: ['-m', '--message', '-F', '--file', '--ref'] });
   const ref = notesRef(o);
   const target = o._[0] ? resolveCommit(repo, o._[0]) : headCommit(repo);
-  const msg = o.mList ? o.mList.join('\n\n') : o['--message'] || (o['-F'] || o['--file'] ? w.files.get(normPath(ctx.cwd + '/' + (o['-F'] || o['--file']))) : null);
+  const msg = o.mList ? o.mList.join('\n\n') : o['--message'] || (o['-F'] || o['--file'] ? w.files.get(pathIn(ctx, o['-F'] || o['--file'])) : null);
   const existing = target ? noteFor(repo, target, ref) : null;
   if (sub === 'list') {
     if (o._[0]) { if (!existing) throw new GitError(`error: no note found for object ${target}.`, 1); ctx.out.push(w.blobHash(existing)); return 0; }
