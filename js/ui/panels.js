@@ -3,7 +3,8 @@
 import { h, clear } from './dom.js';
 import { computeStatus, headCommit, worktree, branchNames, currentBranch, revList } from '../git/core.js';
 import { shortHash, relativeTime, stripAnsi } from '../git/world.js';
-import { prStatus, mergePR, checksFor, approveDeployment, currentDeployment } from '../git/github.js';
+import { prStatus, mergePR, checksFor, approveDeployment, currentDeployment, enqueuePR, protectionFor } from '../git/github.js';
+import { githubVerified } from '../git/extras.js';
 import { GraphView } from './graph.js';
 
 export class AreasView {
@@ -129,7 +130,7 @@ export class GitHubView {
         return h('li', {}, h('div', { class: 'row' },
           h('span', {}, h('strong', {}, b), b === def ? h('span', { class: 'pill', style: { marginLeft: '8px' } }, 'default') : null, prot ? h('span', { class: 'pill pill-warn', style: { marginLeft: '6px' } }, 'protected') : null),
           h('span', { class: 'meta mono' }, shortHash(hh))),
-          h('span', { class: 'meta' }, `${c.message.split('\n')[0]} · ${c.author.name} · ${relativeTime(c.committer.time, w.time)}`));
+          h('span', { class: 'meta' }, `${c.message.split('\n')[0]} · ${c.author.name} · ${relativeTime(c.committer.time, w.time)}`, githubVerified(w, hh) ? h('span', { class: 'pill pill-ok', style: { marginLeft: '6px' } }, 'Verified') : null));
       })) : h('div', { class: 'gh-empty' }, 'Empty repository. Push a branch to it: git push -u origin main')));
 
     // PRs
@@ -207,17 +208,26 @@ export class GitHubView {
     if (st) {
       const checks = checksFor(bare, st.head);
       if (checks.length) li.append(h('span', { class: 'meta' }, checks.map(c => `${c.conclusion === 'success' ? '✓' : '✗'} ${c.workflow}`).join('  ')));
+      if (pr.requestedReviewers?.length) li.append(h('span', { class: 'meta' }, `Review requested from ${pr.requestedReviewers.join(', ')}${Object.keys(st.owners || {}).length ? ' (code owners)' : ''}`));
       if (st.blockers.length) li.append(h('span', { class: 'meta', style: { color: 'var(--warn)' } }, st.blockers.join(' · ')));
+      if (pr.queueState === 'queued' || pr.queueState === 'waiting') li.append(h('span', { class: 'meta', style: { color: 'var(--warn)' } }, `In the merge queue${pr.queueFailure ? ': ' + pr.queueFailure : ''}`));
+      if (pr.queueState === 'removed') li.append(h('span', { class: 'meta', style: { color: 'var(--bad)' } }, `Removed from the merge queue: ${pr.queueFailure}`));
+      const queued = !!protectionFor(bare, pr.base)?.mergeQueue;
       {
         const methodSel = h('select', { class: 'gh-select', 'aria-label': 'Merge method', id: `merge-method-${pr.number}` },
           h('option', { value: 'merge' }, 'Create a merge commit'), h('option', { value: 'squash' }, 'Squash and merge'), h('option', { value: 'rebase' }, 'Rebase and merge'));
-        const btn = h('button', { class: 'btn btn-sm btn-primary', type: 'button', disabled: !!st.blockers.length, onclick: () => {
+        const btn = h('button', { class: 'btn btn-sm btn-primary', type: 'button', disabled: !!st.blockers.filter(b => !queued || !/out-of-date/.test(b)).length, onclick: () => {
           try {
-            mergePR(w, bare, pr, methodSel.value);
-            this.onAction?.(`Merged pull request #${pr.number} on GitHub (${methodSel.value})`);
+            if (queued) {
+              const state = enqueuePR(w, bare, pr, methodSel.value);
+              this.onAction?.(state === 'merged' ? `Pull request #${pr.number} passed the merge queue and was merged` : state === 'removed' ? `Pull request #${pr.number} was removed from the merge queue: ${pr.queueFailure}` : `Pull request #${pr.number} is waiting in the merge queue: ${pr.queueFailure}`, state === 'removed');
+            } else {
+              mergePR(w, bare, pr, methodSel.value);
+              this.onAction?.(`Merged pull request #${pr.number} on GitHub (${methodSel.value})`);
+            }
           } catch (e) { this.onAction?.(stripAnsi(e.message), true); }
           this.render(repo, shell);
-        } }, 'Merge pull request');
+        } }, queued ? 'Merge when ready' : 'Merge pull request');
         li.append(h('div', { class: 'row', style: { justifyContent: 'flex-start' } }, methodSel, btn));
       }
     }

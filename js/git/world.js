@@ -85,6 +85,10 @@ export class World {
     this.treeCache = new Map();
     this.listeners = new Set();
     this.events = [];           // log of notable things labs can inspect
+    this.signatures = new Map(); // commit/tag hash -> { format, key, fingerprint, email }
+    this.signing = null;         // { commit, tag }: signature to attach while a signing command runs
+    this.graft = null;           // shallow boundary of the repository a command is running in
+    this.keepDirs = new Set();   // empty directories git keeps (unpopulated submodules)
   }
 
   tick(minutes = 7) { this.time += minutes * 60 + 13; return this.time; }
@@ -166,6 +170,7 @@ export class World {
     if (!this.objects.has(hash)) {
       this.objects.set(hash, { type: 'commit', tree, parents: [...parents], author: { ...author }, committer: { ...committer }, message: message.replace(/\n+$/, ''), raw: text, size: body.length });
     }
+    if (this.signing?.commit) this.signatures.set(hash, { ...this.signing.commit, email: committer.email });
     return hash;
   }
 
@@ -175,6 +180,7 @@ export class World {
     const body = utf8(text);
     const hash = this.hashObject('tag', body);
     this.objects.set(hash, { type: 'tag', object, objtype: target.type, tag, tagger: { ...tagger }, message, raw: text, size: body.length });
+    if (this.signing?.tag) this.signatures.set(hash, { ...this.signing.tag, email: tagger.email });
     return hash;
   }
 
@@ -224,7 +230,7 @@ export class World {
   pruneEmptyDirs(root) {
     const dirs = [...this.dirs].filter(d => d.startsWith(root + '/')).sort((a, b) => b.length - a.length);
     for (const d of dirs) {
-      if (this.listDir(d).length === 0) this.dirs.delete(d);
+      if (this.listDir(d).length === 0 && !this.keepDirs.has(d)) this.dirs.delete(d);
     }
   }
 

@@ -153,6 +153,9 @@ export function resolveCommit(repo, rev) {
 
 // ---------- history ----------
 
+// a shallow clone cuts history at its boundary commits: world.graft is set while a git command runs
+const parentsOf = (world, h) => (world.graft?.has(h) ? [] : world.commit(h).parents);
+
 export function ancestors(world, hash) {
   const seen = new Set();
   const stack = hash ? [hash] : [];
@@ -160,7 +163,7 @@ export function ancestors(world, hash) {
     const h = stack.pop();
     if (seen.has(h)) continue;
     seen.add(h);
-    for (const p of world.commit(h).parents) stack.push(p);
+    for (const p of parentsOf(world, h)) stack.push(p);
   }
   return seen;
 }
@@ -194,7 +197,7 @@ export function revList(world, heads, exclude = [], { firstParent = false } = {}
     const h = stack.pop();
     if (seen.has(h) || ex.has(h)) continue;
     seen.add(h);
-    const ps = world.commit(h).parents;
+    const ps = parentsOf(world, h);
     for (const p of (firstParent ? ps.slice(0, 1) : ps)) {
       if (!ex.has(p)) { childCount.set(p, (childCount.get(p) || 0) + 1); stack.push(p); }
     }
@@ -246,7 +249,38 @@ export function worktree(repo) {
     if (nested) continue;
     out.set(rel, content);
   }
+  // a repository directly inside this one is a submodule (or an embedded repo): git sees one
+  // entry holding the commit its HEAD points at
+  for (const [root, sub] of repo.world.repos) {
+    if (root === repo.root || !root.startsWith(pre) || sub.bare) continue;
+    const between = [...repo.world.repos.keys()].some(r => r !== repo.root && r !== root && r.startsWith(pre) && root.startsWith(r + '/'));
+    const h = headCommit(sub);
+    if (!between && h) out.set(root.slice(pre.length), `Subproject commit ${h}\n`);
+  }
   return out;
+}
+
+export const isGitlink = c => typeof c === 'string' && c.startsWith('Subproject commit ');
+
+// ---------- content filters ----------
+// .gitattributes (text, eol), core.autocrlf and Git LFS change what `git add` stores (clean) and
+// what checkout writes (smudge). filters.js installs the real implementations.
+export const contentFilters = { clean: (repo, path, content) => content, smudge: (repo, path, content) => content };
+
+export function cleanContent(repo, path, content, warn) { return contentFilters.clean(repo, path, content, warn); }
+export function cleanHash(repo, path, content) { return repo.world.blobHash(contentFilters.clean(repo, path, content)); }
+
+// a tracked path missing from the working tree on purpose: outside the sparse cone, or a
+// submodule that was never initialised
+export function absentOk(repo, path) {
+  return skipWorktree(repo, path) || isGitlink(repo.world.objects.get(repo.index.get(path))?.content);
+}
+
+// ---------- sparse checkout (cone mode) ----------
+export function skipWorktree(repo, path) {
+  const s = repo.sparse;
+  if (!s || !path.includes('/')) return false;
+  return !s.dirs.some(d => path === d || path.startsWith(d + '/'));
 }
 
 export function readWork(repo, rel) {
@@ -254,11 +288,21 @@ export function readWork(repo, rel) {
 }
 
 export function writeWork(repo, rel, content) {
-  repo.world.writeFile(repo.root + '/' + rel, content);
+  const abs = repo.root + '/' + rel;
+  if (isGitlink(content)) {
+    if (!repo.world.repos.has(abs)) {
+      for (let d = abs; d.length > repo.root.length; d = d.slice(0, d.lastIndexOf('/'))) repo.world.dirs.add(d);
+      repo.world.keepDirs.add(abs);
+    }
+    return;
+  }
+  repo.world.writeFile(abs, contentFilters.smudge(repo, rel, content));
 }
 
 export function removeWork(repo, rel) {
-  repo.world.removeFile(repo.root + '/' + rel);
+  const abs = repo.root + '/' + rel;
+  if (repo.world.repos.has(abs)) return;
+  repo.world.removeFile(abs);
 }
 
 // ---------- .gitignore ----------
@@ -339,8 +383,10 @@ export function computeStatus(repo) {
     }
   }
   for (const [p, hash] of [...repo.index].sort()) {
-    if (!wt.has(p)) unstaged.push({ path: p, kind: 'deleted' });
-    else if (w.blobHash(wt.get(p)) !== hash) unstaged.push({ path: p, kind: 'modified' });
+    if (!wt.has(p)) {
+      if (skipWorktree(repo, p) || isGitlink(w.objects.get(hash)?.content)) continue;
+      unstaged.push({ path: p, kind: 'deleted' });
+    } else if (cleanHash(repo, p, wt.get(p)) !== hash) unstaged.push({ path: p, kind: 'modified' });
   }
   const conflicts = [...repo.conflicts.entries()].map(([path, c]) => ({
     path,
@@ -393,7 +439,8 @@ export function checkoutTree(repo, target, { force = false, from = null } = {}) 
   for (const p of paths) {
     if (head.get(p) === target.get(p)) continue;
     const inIndex = repo.index.get(p);
-    const work = wt.has(p) ? w.blobHash(wt.get(p)) : undefined;
+    if (!wt.has(p) && skipWorktree(repo, p)) continue;
+    const work = wt.has(p) ? cleanHash(repo, p, wt.get(p)) : undefined;
     if (!head.has(p)) {
       if (wt.has(p) && !inIndex && work !== target.get(p)) untrackedBlocked.push(p);
       else if (inIndex && inIndex !== target.get(p)) blocked.push(p);
@@ -414,7 +461,8 @@ export function checkoutTree(repo, target, { force = false, from = null } = {}) 
     const t = target.get(p);
     if (t) {
       repo.index.set(p, t);
-      writeWork(repo, p, w.objects.get(t).content);
+      if (skipWorktree(repo, p)) removeWork(repo, p);
+      else writeWork(repo, p, w.objects.get(t).content);
     } else {
       repo.index.delete(p);
       removeWork(repo, p);
@@ -506,6 +554,9 @@ export function mergeTrees(world, base, ours, theirs, labels) {
   return { result, conflicts };
 }
 
+// rerere plugs in here: a hook may return { text, stage, note } to reuse a recorded resolution
+export const conflictHooks = [];
+
 // Apply a merge result to index + worktree (starting from HEAD == ours).
 export function applyMerge(repo, ours, merge) {
   const w = repo.world;
@@ -513,9 +564,17 @@ export function applyMerge(repo, ours, merge) {
   for (const p of all) {
     const c = merge.conflicts.find(x => x.path === p);
     if (c) {
+      let text = c.text, stage = false;
+      for (const hook of conflictHooks) {
+        const r = hook(repo, p, c);
+        if (!r) continue;
+        if (r.note) (merge.notes = merge.notes || []).push(r.note);
+        if (r.text !== undefined) { text = r.text; stage = !!r.stage; }
+      }
+      if (stage) { repo.index.set(p, w.writeBlob(text)); repo.conflicts.delete(p); writeWork(repo, p, text); continue; }
       repo.index.delete(p);
       repo.conflicts.set(p, { base: c.base, ours: c.ours, theirs: c.theirs });
-      writeWork(repo, p, c.text);
+      writeWork(repo, p, text);
       continue;
     }
     const h = merge.result.get(p);
@@ -539,6 +598,7 @@ export function conflictLines(merge, theirsLabel = 'theirs') {
     else out.push(`CONFLICT (modify/delete): ${c.path} deleted in ${c.deletedBy === 'ours' ? 'HEAD' : theirsLabel} and modified in ${c.deletedBy === 'ours' ? theirsLabel : 'HEAD'}. Version of ${c.path} left in tree.`);
     touched.add(c.path);
   }
+  if (merge.notes) out.push(...merge.notes);
   return out;
 }
 

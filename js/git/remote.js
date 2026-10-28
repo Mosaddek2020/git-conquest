@@ -29,6 +29,34 @@ export function accessRemote(ctx, url, { write = false } = {}) {
   return { bare, canon };
 }
 
+// Checks GitHub runs on the commits a push would add (large files, secrets, signatures).
+// Each guard returns null, { reject: [lines] } or { info: [lines] }.
+export const pushGuards = [];
+
+// commits more than `depth` steps from the tips are cut off; returns the boundary commits
+export function shallowBoundary(world, tips, depth) {
+  const seen = new Map();
+  const queue = tips.filter(Boolean).map(h => [h, 1]);
+  const boundary = new Set();
+  while (queue.length) {
+    const [h, d] = queue.shift();
+    if (seen.has(h) && seen.get(h) <= d) continue;
+    seen.set(h, d);
+    const ps = world.commit(h).parents;
+    if (d >= depth) { if (ps.length) boundary.add(h); continue; }
+    for (const p of ps) queue.push([p, d + 1]);
+  }
+  for (const b of [...boundary]) if (seen.get(b) < depth) boundary.delete(b);
+  return boundary;
+}
+
+// branches a remote's fetch refspecs ask for (null = all of them)
+function fetchedBranches(repo, name) {
+  const specs = String(repo.config[`remote.${name}.fetch`] || '').split('\n').filter(Boolean);
+  if (!specs.length || specs.some(x => x.includes('*'))) return null;
+  return specs.map(x => x.replace(/^\+/, '').split(':')[0].replace(/^refs\/heads\//, ''));
+}
+
 function displayUrl(url) {
   return url;
 }
@@ -121,7 +149,8 @@ export function remoteCommands({ parseOpts, needRepo, needWorkTree, mergeInto, c
     }
     const { bare } = accessRemote(ctx, url);
     const lines = [];
-    const heads = Object.keys(bare.refs).filter(r => r.startsWith('refs/heads/')).sort();
+    const only = fetchedBranches(repo, name);
+    const heads = Object.keys(bare.refs).filter(r => r.startsWith('refs/heads/') && (!only || only.includes(r.slice(11)))).sort();
     let newObjects = 0;
     for (const r of heads) {
       const b = r.slice(11);
@@ -137,7 +166,7 @@ export function remoteCommands({ parseOpts, needRepo, needWorkTree, mergeInto, c
     }
     const defaultBranch = bare.HEAD.replace('ref: refs/heads/', '');
     if (bare.refs['refs/heads/' + defaultBranch]) repo.refs[`refs/remotes/${name}/HEAD`] = bare.refs['refs/heads/' + defaultBranch];
-    if (tags) {
+    if (tags && !only) {
       for (const r of Object.keys(bare.refs).filter(x => x.startsWith('refs/tags/'))) {
         if (repo.refs[r]) continue;
         repo.refs[r] = bare.refs[r];
@@ -164,13 +193,36 @@ export function remoteCommands({ parseOpts, needRepo, needWorkTree, mergeInto, c
 
   cmds.fetch = (ctx, args) => {
     const repo = needRepo(ctx);
-    const o = parseOpts(args, { bool: ['--all', '--prune', '-p', '-q', '--quiet', '--tags', '-v'], val: [] });
+    const o = parseOpts(args, { bool: ['--all', '--prune', '-p', '-q', '--quiet', '--tags', '-v', '--unshallow'], val: ['--depth'] });
     const names = remoteNames(repo);
+    if (o['--unshallow'] && !repo.shallow) throw new GitError('fatal: --unshallow on a complete repository does not make sense');
+    // explicit refspecs for other namespaces, e.g. git fetch origin 'refs/notes/*:refs/notes/*'
+    const extra = o._.slice(1).filter(x => /^\+?refs\/(?!heads\/)/.test(x));
+    if (extra.length) {
+      const { bare } = accessRemote(ctx, repo.config[`remote.${o._[0]}.url`] || o._[0]);
+      for (const spec of extra) {
+        const [src, dst = src] = spec.replace(/^\+/, '').split(':');
+        for (const r of Object.keys(bare.refs).filter(x => src.endsWith('*') ? x.startsWith(src.slice(0, -1)) : x === src)) {
+          const target = src.endsWith('*') ? dst.slice(0, -1) + r.slice(src.length - 1) : dst;
+          if (repo.refs[target] === bare.refs[r]) continue;
+          ctx.out.push(`${repo.refs[target] ? '   ' + shortHash(repo.refs[target]) + '..' + shortHash(bare.refs[r]) : ' * [new ref]        '} ${r} -> ${target}`);
+          repo.refs[target] = bare.refs[r];
+        }
+      }
+      return 0;
+    }
     if (!names.length) throw new GitError(`fatal: No remote repository specified.  Please, specify either a URL or a\nremote name from which new revisions should be fetched.`);
     const targets = o['--all'] ? names : [o._[0] || (currentBranch(repo) && upstreamOf(repo, currentBranch(repo))?.remote) || (names.includes('origin') ? 'origin' : names[0])];
     for (const t of targets) {
       if (o['--all']) ctx.out.push(`Fetching ${t}`);
       fetchOne(ctx, repo, t, { prune: o['--prune'] || o['-p'] || repo.config['fetch.prune'] === 'true' || ctx.world.globalConfig['fetch.prune'] === 'true', quiet: o['-q'] || o['--quiet'] });
+    }
+    if (o['--unshallow']) { delete repo.shallow; ctx.world.graft = null; ctx.out.push(C.dim('(the full history is now present: the shallow boundary is gone)')); }
+    else if (o['--depth']) {
+      const tips = Object.entries(repo.refs).filter(([r]) => r.startsWith('refs/remotes/') || r.startsWith('refs/heads/')).map(([, h]) => h);
+      ctx.world.graft = null;
+      repo.shallow = shallowBoundary(ctx.world, tips, Number(o['--depth']));
+      ctx.world.graft = repo.shallow;
     }
     return 0;
   };
@@ -215,6 +267,8 @@ export function remoteCommands({ parseOpts, needRepo, needWorkTree, mergeInto, c
       specs = [up && !o._[0] ? `${cur}:${up.branch}` : cur];
     }
     if (o['--all']) specs = Object.keys(repo.refs).filter(r => r.startsWith('refs/heads/')).map(r => r.slice(11));
+    specs = specs.flatMap(sp => (/^\+?refs\/.*\*$/.test(sp) ? Object.keys(repo.refs).filter(r => r.startsWith(sp.replace(/^\+/, '').split(':')[0].slice(0, -1))) : [sp]));
+    const remoteInfo = [];
     const { bare } = accessRemote(ctx, url, { write: true });
     if (!headCommit(repo) && specs.some(s => s === cur)) {
       throw new GitError(`error: src refspec ${cur} does not match any\nerror: failed to push some refs to '${url}'`);
@@ -238,6 +292,16 @@ export function remoteCommands({ parseOpts, needRepo, needWorkTree, mergeInto, c
         results.push(` - [deleted]         ${name}`);
         continue;
       }
+      // other namespaces (refs/notes/commits …) are copied as they are
+      if (/^refs\/(?!heads\/|tags\/)/.test(src)) {
+        const h = repo.refs[src];
+        if (!h) { results.push(`error: src refspec ${src} does not match any`); failed = true; continue; }
+        const target = dst.startsWith('refs/') ? dst : src;
+        if (bare.refs[target] === h) { results.push(null); continue; }
+        results.push(` * [new reference]   ${src} -> ${target}`);
+        toPush.push(() => { bare.refs[target] = h; });
+        continue;
+      }
       const isTag = !!repo.refs['refs/tags/' + src] && !repo.refs['refs/heads/' + src];
       const hash = isTag ? repo.refs['refs/tags/' + src] : resolve(repo, src, { quiet: true });
       if (!hash) { results.push(`error: src refspec ${src} does not match any`); failed = true; continue; }
@@ -256,6 +320,16 @@ export function remoteCommands({ parseOpts, needRepo, needWorkTree, mergeInto, c
           results.push(`remote: error: GH006: Protected branch update failed for refs/heads/${dst}.`, `remote: error: Cannot force-push to this branch`, ` ! [remote rejected] ${src} -> ${dst} (protected branch hook declined)`);
           failed = true; continue;
         }
+      }
+      {
+        const newCommits = revList(w, [commitHash], Object.values(bare.refs).filter(Boolean).map(x => w.peel(x)).filter(x => w.objects.get(x)?.type === 'commit'));
+        let rejected = null;
+        for (const guard of pushGuards) {
+          const r = guard({ world: w, bare, repo, ref: remoteRef, dst, old, hash: commitHash, isTag, newCommits, force: !!(force || o['--force-with-lease']) });
+          if (r?.reject) { rejected = r.reject; break; }
+          if (r?.info) remoteInfo.push(...r.info);
+        }
+        if (rejected) { results.push(...rejected.map(l => (l.startsWith(' !') ? l : 'remote: ' + l)), ` ! [remote rejected] ${src} -> ${dst} (${isTag ? 'pre-receive hook declined' : 'push declined due to repository rule violations'})`); failed = true; continue; }
       }
       if (old && !isTag && !isAncestor(w, old, commitHash)) {
         const lease = o['--force-with-lease'];
@@ -322,7 +396,7 @@ export function remoteCommands({ parseOpts, needRepo, needWorkTree, mergeInto, c
       if (b === (bare.meta.defaultBranch || 'main')) continue;
       ctx.out.push('remote: ', `remote: Create a pull request for '${b}' on GitHub by visiting:`, `remote:      https://github.com/${bare.meta.owner}/${bare.meta.name}/pull/new/${b}`, 'remote: ');
     }
-    if (!quiet) ctx.out.push(`To ${displayUrl(url)}`, ...shown.map(l => l.startsWith(' !') ? C.red(l) : l));
+    if (!quiet) ctx.out.push(...remoteInfo, `To ${displayUrl(url)}`, ...shown.map(l => l.startsWith(' !') ? C.red(l) : l));
     if (o['-u']) for (const s of specs) { const b = s.split(':')[0].replace(/^\+/, '').replace(/^HEAD$/, cur); if (repo.refs['refs/heads/' + b] && !shown.some(l => l.includes('rejected') && l.includes(b))) ctx.out.push(`branch '${b}' set up to track '${remote}/${s.includes(':') ? s.split(':')[1] : b}'.`); }
     if (failed) {
       ctx.out.push(C.red(`error: failed to push some refs to '${url}'`));
@@ -397,7 +471,7 @@ fatal: Need to specify how to reconcile divergent branches.`);
 
   cmds.clone = (ctx, args) => {
     const w = ctx.world;
-    const o = parseOpts(args, { bool: ['-q', '--bare', '--depth=1', '--single-branch'], val: ['-b', '--branch', '-o', '--origin', '--depth'] });
+    const o = parseOpts(args, { bool: ['-q', '--bare', '--single-branch', '--no-single-branch', '--sparse', '--recurse-submodules', '--no-checkout', '-n'], val: ['-b', '--branch', '-o', '--origin', '--depth', '--filter'] });
     const url = o._[0];
     if (!url) throw new GitError('fatal: You must specify a repository to clone.', 129);
     const { bare, canon } = accessRemote(ctx, url);
@@ -418,11 +492,22 @@ fatal: Need to specify how to reconcile divergent branches.`);
       w.emit({ type: 'clone', root, url: canon.url });
       return 0;
     }
-    const n = revList(w, heads.map(h => bare.refs[h])).length * 3;
-    ctx.out.push(`remote: Enumerating objects: ${n}, done.`, `remote: Counting objects: 100% (${n}/${n}), done.`, `remote: Total ${n} (delta 0), reused ${n} (delta 0), pack-reused 0`, `Receiving objects: 100% (${n}/${n}), done.`);
-    for (const r of heads) repo.refs[`refs/remotes/${remoteName}/${r.slice(11)}`] = bare.refs[r];
-    for (const r of Object.keys(bare.refs).filter(x => x.startsWith('refs/tags/'))) repo.refs[r] = bare.refs[r];
     const def = o['-b'] || o['--branch'] || bare.HEAD.replace('ref: refs/heads/', '');
+    const depth = o['--depth'] ? Number(o['--depth']) : null;
+    if (o['--depth'] && !(depth > 0)) throw new GitError(`fatal: depth ${o['--depth']} is not a positive number`);
+    const single = (depth || o['--single-branch']) && !o['--no-single-branch'];
+    const wanted = single ? heads.filter(r => r === 'refs/heads/' + def) : heads;
+    if (single) repo.config[`remote.${remoteName}.fetch`] = `+refs/heads/${def}:refs/remotes/${remoteName}/${def}`;
+    if (depth) { repo.shallow = shallowBoundary(w, wanted.map(r => bare.refs[r]), depth); w.graft = repo.shallow; }
+    if (o['--filter']) { repo.partial = o['--filter']; repo.config[`remote.${remoteName}.promisor`] = 'true'; repo.config[`remote.${remoteName}.partialclonefilter`] = o['--filter']; }
+    const n = revList(w, wanted.map(h => bare.refs[h])).length * 3;
+    const size = bare.meta.size;
+    const total = size ? size.objects : n;
+    const shown = size ? (depth ? size.shallow : o['--filter'] ? size.blobless : size.full) : null;
+    const objs = size ? Math.round(total * (depth ? 0.02 : o['--filter'] ? 0.35 : 1)) : n;
+    ctx.out.push(`remote: Enumerating objects: ${objs}, done.`, `remote: Counting objects: 100% (${objs}/${objs}), done.`, `remote: Total ${objs} (delta 0), reused ${objs} (delta 0), pack-reused 0`, `Receiving objects: 100% (${objs}/${objs})${shown ? `, ${shown}` : ''}, done.`);
+    for (const r of wanted) repo.refs[`refs/remotes/${remoteName}/${r.slice(11)}`] = bare.refs[r];
+    if (!single) for (const r of Object.keys(bare.refs).filter(x => x.startsWith('refs/tags/'))) repo.refs[r] = bare.refs[r];
     repo.refs[`refs/remotes/${remoteName}/HEAD`] = bare.refs['refs/heads/' + bare.HEAD.replace('ref: refs/heads/', '')];
     const start = bare.refs['refs/heads/' + def];
     if (!start) throw new GitError(`fatal: Remote branch ${def} not found in upstream ${remoteName}`);
@@ -430,8 +515,16 @@ fatal: Need to specify how to reconcile divergent branches.`);
     updateRef(repo, 'refs/heads/' + def, start, `clone: from ${url}`);
     repo.config[`branch.${def}.remote`] = remoteName;
     repo.config[`branch.${def}.merge`] = 'refs/heads/' + def;
-    checkoutTree(repo, commitTreeFlat(repo, start), { from: new Map(), force: true });
-    w.emit({ type: 'clone', root, url: canon.url });
+    if (o['--sparse']) repo.sparse = { cone: true, dirs: [] };
+    if (o['--no-checkout'] || o['-n']) {
+      for (const [p, h] of commitTreeFlat(repo, start)) repo.index.set(p, h);
+    } else checkoutTree(repo, commitTreeFlat(repo, start), { from: new Map(), force: true });
+    if (o['--filter'] && !o['--no-checkout']) ctx.out.push(`Updating files: 100% (${commitTreeFlat(repo, start).size}/${commitTreeFlat(repo, start).size}), done.`, C.dim(`(partial clone: file contents of older commits stay on the server until a command needs them)`));
+    w.emit({ type: 'clone', root, url: canon.url, depth, filter: o['--filter'] || null, sparse: !!o['--sparse'] });
+    if (o['--recurse-submodules'] && commands.submodule) {
+      const sub = { ...ctx, cwd: root, repo };
+      commands.submodule(sub, ['update', '--init', '--recursive']);
+    }
     return 0;
   };
 

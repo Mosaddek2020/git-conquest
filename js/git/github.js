@@ -43,6 +43,45 @@ export function checksFor(bare, hash) {
   return bare.meta.runs.filter(r => r.hash === hash);
 }
 
+// ---------- CODEOWNERS ----------
+
+export function parseCodeowners(text) {
+  const rules = [];
+  for (const raw of String(text || '').split('\n')) {
+    const line = raw.replace(/#.*$/, '').trim();
+    if (!line) continue;
+    const [pattern, ...owners] = line.split(/\s+/);
+    const dir = pattern.endsWith('/');
+    const core = pattern.replace(/^\/|\/$/g, '');
+    const anchored = pattern.startsWith('/') || core.includes('/');
+    const body = core === '*' ? '[^/]+' : core.split('**').map(x => x.replace(/[.+^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '[^/]*').replace(/\?/g, '[^/]')).join('.*');
+    const re = new RegExp(`${anchored ? '^' : '(^|/)'}${body}${dir ? '/.*' : '(/.*)?'}$`);
+    rules.push({ pattern, re: core === '*' ? /.*/ : re, owners });
+  }
+  return rules;
+}
+
+export function codeownersAt(world, bare, branch) {
+  const h = bare.refs['refs/heads/' + branch];
+  if (!h) return null;
+  const flat = world.readTreeFlat(world.commit(h).tree);
+  const path = ['.github/CODEOWNERS', 'CODEOWNERS', 'docs/CODEOWNERS'].find(p => flat.has(p));
+  return path ? { path, rules: parseCodeowners(world.objects.get(flat.get(path)).content) } : null;
+}
+
+// owners of a file: the last matching line wins
+export function ownersOf(rules, file) {
+  let owners = [];
+  for (const r of rules) if (r.re.test(file)) owners = r.owners;
+  return owners;
+}
+
+function ownerMembers(bare, owner) {
+  const o = owner.replace(/^@/, '');
+  if (o.includes('/')) return bare.meta.teams?.[o.split('/')[1]] || [];
+  return [o];
+}
+
 // ---------- pull requests ----------
 
 function headOf(world, pr) {
@@ -69,7 +108,17 @@ export function prStatus(world, bare, pr) {
   if (changesRequested) blockers.push('Changes requested');
   if (rule?.requireChecks && (failingChecks.length || !checks.length)) blockers.push(checks.length ? 'Required status checks failed' : 'Required status checks have not run');
   if (rule?.requireUpToDate && !isAncestor(world, base, head)) blockers.push('This branch is out-of-date with the base branch (rebase or merge the latest base)');
-  return { head, base, mb, merge, commits, approvals, checks, conflicts: merge.conflicts.map(c => c.path), blockers, mergeable: !blockers.length };
+  // code owners of the changed files, judged by the CODEOWNERS file on the base branch
+  const co = codeownersAt(world, bare, pr.base);
+  const owners = {};
+  if (co) {
+    const before = commitTreeFlat(bareView(bare), mb), after = commitTreeFlat(bareView(bare), head);
+    for (const f of new Set([...before.keys(), ...after.keys()])) if (before.get(f) !== after.get(f)) { const o = ownersOf(co.rules, f); if (o.length) owners[f] = o; }
+  }
+  const approvedBy = new Set(pr.reviews.filter(r => r.state === 'APPROVED' && r.author !== pr.author && !pr.reviews.some(x => x.author === r.author && x.state === 'CHANGES_REQUESTED' && x.time > r.time)).map(r => r.author));
+  const waitingOn = [...new Set(Object.values(owners).filter(list => !list.some(o => ownerMembers(bare, o).some(m => approvedBy.has(m)))).flat())];
+  if (rule?.requireCodeOwners && waitingOn.length) blockers.push(`Code owner review required: waiting on ${waitingOn.join(', ')}`);
+  return { head, base, mb, merge, commits, approvals, checks, owners, waitingOn, conflicts: merge.conflicts.map(c => c.path), blockers, mergeable: !blockers.length };
 }
 
 function bareView(bare) { return { world: bare.world }; }
@@ -122,6 +171,11 @@ export function createPR(world, bare, { title, body = '', head, headRepo, base =
   const headRepoObj = world.remotes.get(headRepo);
   const pr = { number, title, body, head, headRepo, headOwner: headRepoObj.meta.owner, base, author: author || world.github.user, state: 'open', draft, reviews: [], comments: [], time: world.time, headHash: headRepoObj.refs['refs/heads/' + head] };
   bare.meta.prs.push(pr);
+  // GitHub requests reviews from the code owners of the files the PR touches
+  try {
+    const owners = [...new Set(Object.values(prStatus(world, bare, pr).owners).flat())].filter(o => o.replace(/^@/, '') !== pr.author);
+    if (owners.length) { pr.requestedReviewers = owners; world.emit({ type: 'review-requested', url: bare.meta.url, number, reviewers: owners, codeOwners: true }); }
+  } catch { /* no base yet */ }
   const hh = headRepoObj.refs['refs/heads/' + head];
   if (hh) runWorkflows(world, bare, 'pull_request', head, hh, number);
   world.emit({ type: 'pr-created', url: bare.meta.url, number });
@@ -133,7 +187,62 @@ export function reviewPR(world, bare, number, { state, body = '', author }) {
   world.tick(2);
   pr.reviews.push({ state, body, author, time: world.time });
   world.emit({ type: 'pr-review', url: bare.meta.url, number, state, author });
+  if (pr.autoQueue && prStatus(world, bare, pr).mergeable) enqueuePR(world, bare, pr, pr.autoQueue);
   return pr;
+}
+
+// ---------- merge queue ----------
+// With a merge queue, "merge" means "test this PR on top of everything queued before it, then
+// merge". Each entry runs the merge_group workflows on a temporary gh-readonly-queue/ branch.
+
+export function enqueuePR(world, bare, pr, method = 'squash') {
+  bare.meta.queue = bare.meta.queue || [];
+  delete pr.autoQueue;
+  if (!bare.meta.queue.some(e => e.number === pr.number)) bare.meta.queue.push({ number: pr.number, method });
+  pr.queueState = 'queued';
+  world.emit({ type: 'queue-add', url: bare.meta.url, number: pr.number });
+  processQueue(world, bare);
+  return pr.queueState;
+}
+
+export function processQueue(world, bare) {
+  const q = bare.meta.queue || [];
+  while (q.length) {
+    const e = q[0];
+    const pr = bare.meta.prs.find(p => p.number === e.number);
+    if (!pr || pr.state !== 'open') { q.shift(); continue; }
+    const st = prStatus(world, bare, pr);
+    if (st.conflicts.length) { q.shift(); pr.queueState = 'removed'; pr.queueFailure = 'it conflicts with the pull requests ahead of it'; world.emit({ type: 'queue-removed', url: bare.meta.url, number: pr.number, reason: 'conflict' }); continue; }
+    world.tick(2);
+    const ghSig = { name: 'GitHub', email: 'noreply@github.com', time: world.time };
+    const tree = world.writeTree(st.merge.result);
+    const message = e.method === 'merge' ? `Merge pull request #${pr.number} from ${pr.headOwner}/${pr.head}\n\n${pr.title}` : `${pr.title} (#${pr.number})`;
+    const parents = e.method === 'merge' ? [st.base, st.head] : [st.base];
+    const tmp = world.writeCommit({ tree, parents, message, author: e.method === 'merge' ? ghSig : { ...world.commit(st.head).author, time: world.time }, committer: ghSig });
+    const ref = `gh-readonly-queue/${pr.base}/pr-${pr.number}-${tmp}`;
+    bare.refs['refs/heads/' + ref] = tmp;
+    const runs = runWorkflows(world, bare, 'merge_group', ref, tmp);
+    delete bare.refs['refs/heads/' + ref];
+    if (!runs.length || runs.some(r => r.status !== 'completed')) {
+      pr.queueState = 'waiting';
+      pr.queueFailure = runs.length ? 'checks are still running' : 'no workflow reported a status for the merge group (does CI run on merge_group?)';
+      world.emit({ type: 'queue-waiting', url: bare.meta.url, number: pr.number });
+      break;
+    }
+    if (runs.some(r => r.conclusion !== 'success')) {
+      q.shift();
+      pr.queueState = 'removed';
+      pr.queueFailure = `${runs.find(r => r.conclusion !== 'success').workflow} failed on the merge group (main + #${pr.number})`;
+      world.emit({ type: 'queue-removed', url: bare.meta.url, number: pr.number, reason: 'checks' });
+      continue;
+    }
+    q.shift();
+    bare.refs['refs/heads/' + pr.base] = tmp;
+    Object.assign(pr, { state: 'merged', mergedAs: tmp, mergeMethod: e.method, mergedAt: world.time, queueState: 'merged' });
+    delete pr.queueFailure;
+    runWorkflows(world, bare, 'push', pr.base, tmp);
+    world.emit({ type: 'pr-merged', url: bare.meta.url, number: pr.number, method: e.method, queue: true });
+  }
 }
 
 // ---------- gh CLI ----------
@@ -200,19 +309,22 @@ export function runGh(ctx, args, git) {
 
   if (group === 'ssh-key') {
     if (sub === 'add') {
-      const o = ghOpts(rest, { val: ['--title', '-t'] });
+      const o = ghOpts(rest, { val: ['--title', '-t', '--type'] });
       const path = o._[0];
       if (!path) throw new GitError('error: public key file missing', 1);
+      if (o['--type'] && !['authentication', 'signing'].includes(o['--type'])) throw new GitError(`invalid argument "${o['--type']}" for "--type" flag: valid values are {authentication|signing}`, 1);
       const abs = path.startsWith('/') ? path : (path.startsWith('~') ? w.home + path.slice(1) : ctx.cwd + '/' + path);
       const content = w.files.get(abs.replace(/\/+/g, '/'));
       if (!content) throw new GitError(`open ${path}: no such file or directory`, 1);
       if (!content.startsWith('ssh-')) throw new GitError('HTTP 422: Validation Failed (https://api.github.com/user/keys)\nkey is invalid. You must supply a key in OpenSSH public key format', 1);
-      w.github.sshKeys.push({ title: o['--title'] || o['-t'] || 'dev-laptop', key: content.trim() });
+      const entry = { title: o['--title'] || o['-t'] || 'dev-laptop', key: content.trim() };
+      if (o['--type'] === 'signing') (w.github.signingKeys = w.github.signingKeys || []).push(entry);
+      else w.github.sshKeys.push(entry);
       out.push(`✓ Public key added to your account`);
-      w.emit({ type: 'ssh-key-added' });
+      w.emit({ type: 'ssh-key-added', keyType: o['--type'] || 'authentication' });
       return 0;
     }
-    if (sub === 'list') { for (const k of w.github.sshKeys) out.push(`${k.title}\t${k.key.slice(0, 40)}...`); return 0; }
+    if (sub === 'list') { for (const k of w.github.sshKeys) out.push(`${k.title}\t${k.key.slice(0, 40)}...\tauthentication`); for (const k of w.github.signingKeys || []) out.push(`${k.title}\t${k.key.slice(0, 40)}...\tsigning`); return 0; }
   }
 
   if (group === 'repo') {
@@ -374,7 +486,7 @@ export function runGh(ctx, args, git) {
       const list = bare.meta.prs.filter(p => state === 'all' || p.state === state).slice().reverse();
       if (!list.length) { out.push(`no ${state === 'all' ? '' : state + ' '}pull requests match your search in ${bare.meta.owner}/${bare.meta.name}`); return 0; }
       out.push('', `Showing ${list.length} of ${list.length} ${state === 'all' ? '' : state + ' '}pull request${list.length === 1 ? '' : 's'} in ${bare.meta.owner}/${bare.meta.name}`, '');
-      for (const p of list) out.push(`${C.green('#' + p.number)}  ${p.title.padEnd(36)}  ${C.cyan(p.headOwner === bare.meta.owner ? p.head : p.headOwner + ':' + p.head)}  ${p.state.toUpperCase()}`);
+      for (const p of list) out.push(`${C.green('#' + p.number)}  ${p.title.padEnd(36)}  ${C.cyan(p.headOwner === bare.meta.owner ? p.head : p.headOwner + ':' + p.head)}  ${p.state === 'open' && p.queueState === 'queued' ? 'QUEUED' : p.state.toUpperCase()}`);
       return 0;
     }
     if (sub === 'view' || sub === 'status' || sub === 'checks' || sub === 'diff') {
@@ -404,6 +516,9 @@ export function runGh(ctx, args, git) {
       out.push(C.bold(`${pr.title} #${pr.number}`));
       out.push(`${pr.state === 'open' ? C.green('Open') : pr.state === 'merged' ? C.magenta('Merged') : C.red('Closed')} • ${pr.author} wants to merge ${pl2(st.commits.length, 'commit')} into ${pr.base} from ${pr.headOwner === bare.meta.owner ? pr.head : pr.headOwner + ':' + pr.head}`);
       if (pr.reviews.length) out.push(`Reviews: ${pr.reviews.map(r => `${r.author} (${r.state.replace('_', ' ').toLowerCase()})`).join(', ')}`);
+      if (pr.requestedReviewers?.length) out.push(`Requested reviewers: ${pr.requestedReviewers.join(', ')}`);
+      if (Object.keys(st.owners || {}).length) out.push(`Code owners: ${Object.entries(st.owners).map(([f, o]) => `${f} → ${o.join(' ')}`).join('; ')}`);
+      if (pr.queueState && pr.queueState !== 'merged') out.push(pr.queueState === 'removed' ? C.red(`Merge queue: removed (${pr.queueFailure})`) : C.yellow(`Merge queue: ${pr.queueState}${pr.queueFailure ? ` (${pr.queueFailure})` : ''}`));
       if (st.checks.length) out.push(`Checks: ${st.checks.map(c => `${statusIcon(c)} ${c.workflow}`).join('  ')}`);
       out.push('', pr.body || C.dim('No description provided'), '');
       if (pr.state === 'open') {
@@ -452,6 +567,19 @@ export function runGh(ctx, args, git) {
       const method = o['--squash'] ? 'squash' : o['--rebase'] ? 'rebase' : o['--merge'] ? 'merge' : null;
       if (!method) throw new GitError('--merge, --rebase, or --squash required when not running interactively', 1);
       if (bare.meta.allowedMerge && !bare.meta.allowedMerge.includes(method)) throw new GitError(`X Pull request #${pr.number} is not mergeable: ${method} merges are not allowed on this repository`, 1);
+      if (protectionFor(bare, pr.base)?.mergeQueue && !o['--admin']) {
+        if (pr.state !== 'open') throw new GitError(`X Pull request #${pr.number} is already ${pr.state}`, 1);
+        const st = prStatus(w, bare, pr);
+        const blockers = st.blockers.filter(b => !/out-of-date/.test(b));
+        if (blockers.length && !o['--auto']) throw new GitError(`X Pull request #${pr.number} is not ready for the merge queue:\n${blockers.map(b => '  - ' + b).join('\n')}\nAdd --auto to queue it automatically once it is ready.`, 1);
+        if (blockers.length) { pr.autoQueue = method; out.push(`! Pull request ${bare.meta.owner}/${bare.meta.name}#${pr.number} will be added to the merge queue for ${pr.base} when ready`); return 0; }
+        out.push(`! The merge strategy for ${pr.base} is set by the merge queue`);
+        const state = enqueuePR(w, bare, pr, method);
+        if (state === 'merged') out.push(`${C.magenta('✓')} Pull request ${bare.meta.owner}/${bare.meta.name}#${pr.number} was tested in the merge queue and merged into ${pr.base}`);
+        else if (state === 'removed') out.push(C.red(`X Pull request ${bare.meta.owner}/${bare.meta.name}#${pr.number} was removed from the merge queue: ${pr.queueFailure}`));
+        else out.push(C.yellow(`- Pull request ${bare.meta.owner}/${bare.meta.name}#${pr.number} is in the merge queue: ${pr.queueFailure}`));
+        return state === 'removed' ? 1 : 0;
+      }
       mergePR(w, bare, pr, method, { admin: o['--admin'] });
       out.push(`${C.magenta('✓')} ${method === 'squash' ? 'Squashed and merged' : method === 'rebase' ? 'Rebased and merged' : 'Merged'} pull request ${bare.meta.owner}/${bare.meta.name}#${pr.number} (${pr.title})`);
       if (o['--delete-branch']) {

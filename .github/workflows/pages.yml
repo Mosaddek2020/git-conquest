@@ -27,6 +27,7 @@ jobs:
       - name: Test
         run: |
           node tests/modules.mjs
+          node tests/engine.mjs
           node tests/labs.mjs
           node tests/quizzes.mjs
           node tests/replays.mjs

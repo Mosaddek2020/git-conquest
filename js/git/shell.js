@@ -7,6 +7,9 @@ import { runGh, simulateRun } from './github.js';
 import { httpGet } from './actions.js';
 import { currentBranch, headCommit, computeStatus, worktree, headRef } from './core.js';
 import { splitLines } from './diff.js';
+import { prepareGit } from './extras.js';
+import { contentSize, humanSize, eolInfo, looksBinary } from './filters.js';
+import { runAi } from './ai.js';
 
 const OPS = ['&&', '||', ';;', ';', '|', '>>', '>', '<', '\n'];
 
@@ -134,6 +137,7 @@ export class Shell {
       if (repo.state?.type === 'cherry-pick') state = 'CHERRY-PICKING';
       if (repo.state?.type === 'revert') state = 'REVERTING';
       if (repo.bisect) state = 'BISECTING';
+      if (repo.state?.type === 'am') state = 'AM';
       try { const s = computeStatus(repo); dirty = !!(s.staged.length || s.unstaged.length || s.conflicts.length); } catch { /* ignore */ }
     }
     return { user: 'dev', host: 'conquest', path, branch, state, dirty };
@@ -275,6 +279,7 @@ export class Shell {
     if (!line.trim()) return result;
     let items;
     try {
+      line = this.substitute(line);
       items = parseList(tokenize(line, this.env), 0, []).items;
     } catch (e) {
       out.push(C.red(e.message)); result.code = 2; return result;
@@ -288,6 +293,28 @@ export class Shell {
     this.lastCode = result.code;
     this.env['?'] = result.code;
     return result;
+  }
+
+  // $(command) is replaced by the command's output (trailing newlines trimmed), outside single quotes
+  substitute(line) {
+    if (!line.includes('$(')) return line;
+    let out = '', quote = null;
+    for (let i = 0; i < line.length; i++) {
+      const ch = line[i];
+      if (ch === "'" && quote !== '"') quote = quote === "'" ? null : "'";
+      else if (ch === '"' && quote !== "'") quote = quote === '"' ? null : '"';
+      if (ch === '$' && line[i + 1] === '(' && quote !== "'") {
+        let depth = 0, j = i + 1;
+        for (; j < line.length; j++) { if (line[j] === '(') depth++; else if (line[j] === ')' && --depth === 0) break; }
+        if (j >= line.length) throw new GitError('bash: unexpected EOF while looking for matching `)\'', 2);
+        const r = this.run(line.slice(i + 2, j), { record: false });
+        out += r.out.map(stripAnsi).join('\n').replace(/\n+$/, '');
+        i = j;
+        continue;
+      }
+      out += ch;
+    }
+    return out;
   }
 
   execList(items, out, result, stdinForFirst = null) {
@@ -387,6 +414,7 @@ export class Shell {
     try {
       if (name === 'git') return this.git(rest, out, stdin, result);
       if (name === 'gh') return this.gh(rest, out, result);
+      if (name === 'ai' && !this.extraCommands.ai) return runAi(this, rest, out, stdin);
       if (this.extraCommands[name]) return this.extraCommands[name](rest, out, this, stdin) ?? 0;
       const fn = builtins[name];
       if (!fn) {
@@ -414,7 +442,7 @@ export class Shell {
       out,
       openEditor(req) { result.editor = req; },
       runHook: (repo, name, c2, message) => this.runHook(repo, name, c2, message),
-      runShell: (line) => { const r = self.run(line, { record: false }); return r.code; },
+      runShell: (line, sink) => { const r = self.run(line, { record: false }); if (sink) sink.push(...r.out); return r.code; },
     };
     return ctx;
   }
@@ -422,7 +450,10 @@ export class Shell {
   git(args, out, stdin, result) {
     const ctx = this.makeCtx(out, result);
     ctx.stdin = stdin;
-    const code = runGit(ctx, args);
+    let prep;
+    try { prep = prepareGit(ctx, args); } catch (e) { if (e instanceof GitError) { for (const l of e.message.split('\n')) out.push(colorErr(l)); return e.code; } throw e; }
+    let code;
+    try { code = runGit(ctx, prep.args); } finally { prep.done(); }
     // a commit records the message for .git/COMMIT_EDITMSG
     const repo = this.world.findRepo(this.cwd);
     if (repo && repo.bare === false && headCommit(repo)) {
@@ -441,12 +472,15 @@ export class Shell {
     const out = [];
     const result = { out, code: 0, editor: null };
     const ctx = this.makeCtx(out, result);
+    let prep = null;
     try {
+      if (/COMMIT_EDITMSG/.test(req.title || '')) prep = prepareGit(ctx, ['commit']);
+      else this.world.graft = ctx.repo?.shallow || null;
       result.code = req.onSave(text, ctx) ?? 0;
     } catch (e) {
       if (e instanceof GitError) { for (const l of e.message.split('\n')) out.push(colorErr(l)); result.code = e.code; }
       else throw e;
-    }
+    } finally { prep?.done(); this.world.graft = null; }
     return result;
   }
 
@@ -527,7 +561,7 @@ const builtins = {
         for (const e of shown) {
           if (long) {
             const p = abs + '/' + e[0];
-            const size = e[1] === 'file' ? (this.readFile(p) ?? '').length : 4096;
+            const size = e[1] === 'file' ? contentSize(this.readFile(p) ?? '') : 4096;
             out.push(`${e[1] === 'dir' ? 'd' : '-'}rw-r--r-- 1 dev dev ${String(size).padStart(5)} Jan  1 09:00 ${fmt(e)}`);
           } else out.push(fmt(e));
         }
@@ -553,8 +587,17 @@ const builtins = {
     return 0;
   },
   cat(args, out, stdin) {
-    const files = args.filter(a => a !== '-n');
+    const files = args.filter(a => a !== '-n' && a !== '-A');
     const number = args.includes('-n');
+    const showAll = args.includes('-A');
+    if (showAll) {
+      for (const f of files) {
+        const c = this.readFile(this.resolvePath(f));
+        if (c === undefined) { out.push(`cat: ${f}: No such file or directory`); return 1; }
+        out.push(...c.replace(/\n$/, '').split('\n').map(l => l.replace(/\r$/, '^M') + '$'));
+      }
+      return 0;
+    }
     if (!files.length) { if (stdin != null) out.push(...splitLines(stdin)); return 0; }
     let code = 0;
     for (const f of files) {
@@ -569,6 +612,30 @@ const builtins = {
       if (c && !c.endsWith('\n')) out.noTrailingNewline = true;
     }
     return code;
+  },
+  file(args, out) {
+    for (const f of args.filter(a => !a.startsWith('-'))) {
+      const abs = this.resolvePath(f);
+      const c = this.readFile(abs);
+      if (c === undefined) { out.push(`${f}: ${this.world.isDir(abs) ? 'directory' : 'cannot open (No such file or directory)'}`); continue; }
+      if (looksBinary(c)) { const m = c.match(/^\u0000BINARY \d+ (.*)\u0000$/); out.push(`${f}: ${m ? m[1] : 'data'}`); continue; }
+      if (/^version https:\/\/git-lfs/.test(c)) { out.push(`${f}: ASCII text (a Git LFS pointer, not the real file)`); continue; }
+      const eol = eolInfo(c);
+      out.push(`${f}: ${c.startsWith('#!') ? 'POSIX shell script, ' : ''}ASCII text${eol === 'crlf' ? ', with CRLF line terminators' : eol === 'mixed' ? ', with CRLF, LF line terminators' : ''}`);
+    }
+    return 0;
+  },
+  du(args, out) {
+    const human = args.some(a => /^-\w*h/.test(a));
+    const fmt = n => (human ? humanSize(n).replace(' ', '').replace(/B$/, '').replace(/(\d)$/, '$1B') : String(Math.ceil(n / 1024)));
+    for (const t of args.filter(a => !a.startsWith('-')).concat(args.some(a => !a.startsWith('-')) ? [] : ['.'])) {
+      const abs = this.resolvePath(t);
+      let total = 0;
+      if (this.world.files.has(abs)) total = contentSize(this.world.files.get(abs));
+      else for (const [p, c] of this.world.files) if (p.startsWith(abs + '/')) total += contentSize(c);
+      out.push(`${fmt(total)}\t${t}`);
+    }
+    return 0;
   },
   echo(args, out) {
     let nl = true, esc = false;

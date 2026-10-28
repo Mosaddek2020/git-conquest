@@ -8,7 +8,7 @@ import {
   validRefName, resolve, resolveCommit, ancestors, isAncestor, mergeBase, revList, commitTreeFlat,
   headTreeFlat, toRepoPath, worktree, readWork, writeWork, removeWork, ignoreRules, isIgnored,
   computeStatus, collapseUntracked, checkoutTree, resetHard, requireIdentity, indexTree, makeCommit,
-  mergeTrees, applyMerge, conflictLines, describeCommit, logRef, identity,
+  mergeTrees, applyMerge, conflictLines, describeCommit, logRef, identity, cleanContent, cleanHash, isGitlink, absentOk,
 } from './core.js';
 import { remoteCommands } from './remote.js';
 
@@ -129,6 +129,7 @@ function decorate(repo, hash, map) {
   for (const l of labels) if (l.kind === 'remote') parts.push(C.bold(C.red(l.name)));
   for (const l of labels) if (l.kind === 'branch' && l.name !== cur) parts.push(C.bold(C.green(l.name)));
   for (const l of labels) if (l.kind === 'tag') parts.push(C.bold(C.yellow('tag: ' + l.name)));
+  if (repo.shallow?.has(hash)) parts.push(C.bold(C.blue('grafted')));
   if (!parts.length) return '';
   return C.yellow(' (') + parts.join(C.yellow(', ')) + C.yellow(')');
 }
@@ -233,6 +234,9 @@ function commitStat(w, before, after) {
 // ---------- commands ----------
 
 const commands = {};
+
+// extensions (signatures, notes) add lines to `git log` output and placeholders to --format
+export const logHooks = { header: [], footer: [], format: {} };
 
 commands.version = (ctx) => { ctx.out.push(`git version ${GIT_VERSION}`); return 0; };
 
@@ -409,14 +413,14 @@ commands.status = (ctx, args) => {
 
 commands.add = (ctx, args) => {
   const repo = needWorkTree(ctx);
-  const o = parseOpts(args, { bool: ['-A', '--all', '-u', '--update', '-f', '--force', '-v', '--verbose', '-n', '--dry-run', '-p', '--patch', '.'], val: [] });
+  const o = parseOpts(args, { bool: ['-A', '--all', '-u', '--update', '-f', '--force', '-v', '--verbose', '-n', '--dry-run', '-p', '--patch', '.', '--renormalize'], val: [] });
   if (o['-p'] || o['--patch']) {
     ctx.out.push(C.dim('(git add -p lets you stage individual hunks. The simulator stages whole files; try `git add <file>`.)'));
     return 0;
   }
   const specs = [...o._, ...(o['.'] ? ['.'] : []), ...(o.paths || [])];
   const all = o['-A'] || o['--all'];
-  const update = o['-u'] || o['--update'];
+  const update = o['-u'] || o['--update'] || o['--renormalize'];
   if (!specs.length && !all && !update) {
     ctx.out.push('Nothing specified, nothing added.', C.yellow(`hint: Maybe you wanted to say 'git add .'?`),
       C.yellow('hint: Disable this message with "git config advice.addEmptyPathspec false"'));
@@ -444,7 +448,10 @@ commands.add = (ctx, args) => {
       continue;
     }
     matched = true;
-    const h = w.writeBlob(content);
+    if (isGitlink(content) && !tracked && !/\[submodule /.test(wt.get('.gitmodules') || '')) {
+      ctx.out.push(C.yellow(`warning: adding embedded git repository: ${p}`), C.yellow('hint: You\'ve added another git repository inside your current repository.'), C.yellow('hint: If you meant to add a submodule, use:'), C.yellow(`hint: \tgit submodule add <url> ${p}`), C.yellow('hint: If you added this path by mistake, remove it from the index with:'), C.yellow(`hint: \tgit rm --cached ${p}`));
+    }
+    const h = w.writeBlob(isGitlink(content) ? content : cleanContent(repo, p, content, msg => ctx.out.push(C.yellow(msg))));
     if (o['-n'] || o['--dry-run']) { ctx.out.push(`add '${p}'`); continue; }
     if (repo.index.get(p) !== h || repo.conflicts.has(p)) {
       if (o['-v'] || o['--verbose']) ctx.out.push(`add '${p}'`);
@@ -454,7 +461,7 @@ commands.add = (ctx, args) => {
   }
   // deletions
   for (const p of [...repo.index.keys(), ...repo.conflicts.keys()]) {
-    if (wt.has(p) || !match(p)) continue;
+    if (wt.has(p) || !match(p) || (repo.index.has(p) && absentOk(repo, p))) continue;
     if (!specs.length && !all && !update) continue;
     if (o['-n'] || o['--dry-run']) { ctx.out.push(`remove '${p}'`); continue; }
     repo.index.delete(p);
@@ -491,7 +498,7 @@ commands.rm = (ctx, args) => {
     const dirty = hits.filter(p => {
       if (repo.conflicts.has(p)) return false;
       const work = readWork(repo, p);
-      return repo.index.get(p) !== head.get(p) || (work !== undefined && ctx.world.blobHash(work) !== repo.index.get(p));
+      return repo.index.get(p) !== head.get(p) || (work !== undefined && cleanHash(repo, p, work) !== repo.index.get(p));
     });
     if (dirty.length) throw new GitError(`error: the following file has local modifications:\n${dirty.map(d => '    ' + d).join('\n')}\n(use --cached to keep the file, or -f to force removal)`, 1);
   }
@@ -563,9 +570,9 @@ commands.commit = (ctx, args) => {
   }
   if (o['-a'] || o['--all']) {
     for (const [p] of [...repo.index]) {
-      const work = readWork(repo, p);
-      if (work === undefined) repo.index.delete(p);
-      else repo.index.set(p, w.writeBlob(work));
+      const work = worktree(repo).get(p);
+      if (work === undefined) { if (!absentOk(repo, p)) repo.index.delete(p); }
+      else repo.index.set(p, w.writeBlob(isGitlink(work) ? work : cleanContent(repo, p, work)));
     }
   }
   if (o._.length) {
@@ -573,8 +580,8 @@ commands.commit = (ctx, args) => {
     const match = specMatcher(ctx, o._);
     for (const [p] of [...repo.index]) {
       if (!match(p)) continue;
-      const work = readWork(repo, p);
-      if (work === undefined) repo.index.delete(p); else repo.index.set(p, w.writeBlob(work));
+      const work = worktree(repo).get(p);
+      if (work === undefined) { if (!absentOk(repo, p)) repo.index.delete(p); } else repo.index.set(p, w.writeBlob(isGitlink(work) ? work : cleanContent(repo, p, work)));
     }
   }
   const head = headCommit(repo);
@@ -657,7 +664,7 @@ commands.commit = (ctx, args) => {
 commands.log = (ctx, args) => {
   const repo = needRepo(ctx);
   const o = parseOpts(args, {
-    bool: ['--oneline', '--graph', '--all', '--decorate', '-p', '--patch', '--stat', '--reverse', '--first-parent', '--no-merges', '--merges', '--name-only', '--abbrev-commit', '--follow'],
+    bool: ['--oneline', '--graph', '--all', '--decorate', '-p', '--patch', '--stat', '--reverse', '--first-parent', '--no-merges', '--merges', '--name-only', '--abbrev-commit', '--follow', '--show-signature', '--no-notes', '--notes'],
     val: ['-n', '--max-count', '--author', '--grep', '--format', '--pretty', '--since', '--until', '-S'],
   });
   const w = ctx.world;
@@ -714,10 +721,10 @@ commands.log = (ctx, args) => {
     let body = [];
     if (fmt && fmt !== 'oneline' && fmt !== 'short' && fmt !== 'full') {
       const f = fmt.replace(/^(format|tformat):/, '');
-      body.push(f.replace(/%(H|h|s|an|ae|ad|ar|d|D|n|b|cn|P|p|T|t|Cred|Cgreen|Cyellow|Cblue|Creset|ad)/g, (m, k) => ({
+      body.push(f.replace(/%(G\?|GS|GK|N|H|h|s|an|ae|ad|ar|d|D|n|b|cn|ce|P|p|T|t|Cred|Cgreen|Cyellow|Cblue|Creset|ad)/g, (m, k) => logHooks.format[k] ? logHooks.format[k](repo, h, o) : ({
         H: h, h: shortHash(h), s: firstLine(c.message), an: c.author.name, ae: c.author.email, ad: formatDate(c.author.time),
         ar: relativeTime(c.author.time, w.time), d: decorate(repo, h, refMap), D: stripAnsi(decorate(repo, h, refMap)).replace(/^ \(|\)$/g, ''), n: '\n', b: c.message.split('\n').slice(2).join('\n'),
-        cn: c.committer.name, P: c.parents.join(' '), p: c.parents.map(shortHash).join(' '), T: c.tree, t: shortHash(c.tree),
+        cn: c.committer.name, ce: c.committer.email, P: c.parents.join(' '), p: c.parents.map(shortHash).join(' '), T: c.tree, t: shortHash(c.tree),
         Cred: '\x1b[31m', Cgreen: '\x1b[32m', Cyellow: '\x1b[33m', Cblue: '\x1b[34m', Creset: '\x1b[0m',
       })[k] ?? m));
       body = body.join('\n').split('\n');
@@ -725,11 +732,13 @@ commands.log = (ctx, args) => {
       body.push(`${C.yellow(shortHash(h))}${decorate(repo, h, refMap)} ${firstLine(c.message)}`);
     } else {
       body.push(C.yellow(`commit ${h}`) + decorate(repo, h, refMap));
+      for (const fn of logHooks.header) body.push(...fn(repo, h, o));
       if (c.parents.length > 1) body.push(`Merge: ${c.parents.map(shortHash).join(' ')}`);
       body.push(`Author: ${c.author.name} <${c.author.email}>`);
       body.push(`Date:   ${formatDate(c.author.time)}`);
       body.push('');
       for (const l of c.message.split('\n')) body.push('    ' + l);
+      for (const fn of logHooks.footer) body.push(...fn(repo, h, o));
     }
     if (o['--stat'] || o['-p'] || o['--patch'] || o['--name-only']) {
       const before = c.parents[0] ? commitTreeFlat(repo, c.parents[0]) : new Map();
@@ -852,8 +861,8 @@ commands.diff = (ctx, args) => {
       const work = wt.get(p);
       if (work === undefined) { if (old) pairs.push({ path: p, old, new: null, newContent: undefined }); continue; }
       if (!old && revs.length === 0) continue;
-      if (old && w.blobHash(work) === old) continue;
-      pairs.push({ path: p, old: old || null, new: null, newContent: work });
+      if (old && cleanHash(repo, p, work) === old) continue;
+      pairs.push({ path: p, old: old || null, new: null, newContent: cleanContent(repo, p, work) });
     }
   }
   if (o['--word-diff'] || o['--color-words']) {
@@ -1150,7 +1159,7 @@ function switchCore(ctx, target, { create = null, force = false, detach = false,
 commands.switch = (ctx, args) => {
   const repo = needWorkTree(ctx);
   const o = parseOpts(args, { bool: ['--detach', '-f', '--force', '--discard-changes', '--no-track', '-t', '--track', '-q', '--quiet'], val: ['-c', '--create', '-C', '--force-create', '--orphan'] });
-  if (o['-q'] || o['--quiet']) { const out = ctx.out; ctx.out = []; try { return commands.switch({ ...ctx, out: [], get repo() { return ctx.repo; } }, args.filter(a => a !== '-q' && a !== '--quiet')); } finally { ctx.out = out; } }
+  if (o['-q'] || o['--quiet']) { const out = ctx.out; ctx.out = []; try { return commands.switch({ ...ctx, out: [], get repo() { return ctx.repo; } }, args.map(a => (/^-[a-zA-Z]{2,}$/.test(a) ? a.replace('q', '') : a)).filter(a => a !== '-q' && a !== '--quiet' && a !== '-')); } finally { ctx.out = out; } }
   if (o['--orphan']) {
     resetHard(repo, null); repo.index.clear();
     repo.HEAD = 'ref: refs/heads/' + o['--orphan'];
@@ -1427,7 +1436,16 @@ function runSequencer(ctx) {
     const step = s.todo.shift();
     s.current = step;
     if (step.action === 'drop') continue;
-    if (step.action === 'exec') { ctx.out.push(`Executing: ${step.cmd}`); continue; }
+    if (step.action === 'exec') {
+      ctx.out.push(`Executing: ${step.cmd}`);
+      const code = ctx.runShell ? ctx.runShell(step.cmd, ctx.out) : 0;
+      if (code !== 0) {
+        ctx.out.push(`warning: execution failed: ${step.cmd}`, 'You can fix the problem, and then run', '', '  git rebase --continue', '');
+        s.stopped = 'edit';
+        return 1;
+      }
+      continue;
+    }
     if (step.action === 'break') { ctx.out.push('Stopped at HEAD', `You can amend the commit now, with`, '', `  git commit --amend`, '', `Once you are satisfied with your changes, run`, '', `  git rebase --continue`); s.stopped = 'edit'; return 0; }
     const c = w.commit(step.hash);
     if (c.parents.length > 1) continue; // merges are dropped by plain rebase
@@ -1519,7 +1537,9 @@ function todoList(w, commits) {
 
 commands.rebase = (ctx, args) => {
   const repo = needWorkTree(ctx);
-  const o = parseOpts(args, { bool: ['-i', '--interactive', '--continue', '--abort', '--skip', '--root', '--autosquash', '-q', '--edit-todo'], val: ['--onto'] });
+  const o = parseOpts(args, { bool: ['-i', '--interactive', '--continue', '--abort', '--skip', '--root', '--autosquash', '-q', '--edit-todo', '-f', '--force-rebase', '--no-ff'], val: ['--onto', '--exec', '-x'] });
+  const forceRebase = o['-f'] || o['--force-rebase'] || o['--no-ff'];
+  const execCmd = o['--exec'] || o['-x'];
   const w = ctx.world;
   if (o['--abort']) {
     if (repo.state?.type !== 'rebase') throw new GitError('fatal: No rebase in progress?');
@@ -1575,7 +1595,7 @@ commands.rebase = (ctx, args) => {
   const onto = o['--onto'] ? resolveCommit(repo, o['--onto']) : upstream;
   let commits = revList(w, [head], upstream ? [upstream] : []).reverse().filter(h => w.commit(h).parents.length < 2);
   const headName = headRef(repo);
-  if (!interactive && upstream && isAncestor(w, upstream, head) && !o['--onto']) {
+  if (!interactive && !forceRebase && !execCmd && upstream && isAncestor(w, upstream, head) && !o['--onto']) {
     ctx.out.push(`Current branch ${currentBranch(repo) || 'HEAD'} is up to date.`);
     return 0;
   }
@@ -1606,7 +1626,8 @@ commands.rebase = (ctx, args) => {
   };
   const baseState = { type: 'rebase', headName, onto, origHead: head, interactive, todo: [], current: null };
   if (o['--root']) commits = revList(w, [head], []).reverse();
-  if (!interactive) return start({ ...baseState, todo: todoList(w, commits) });
+  const withExec = todo => (execCmd ? todo.flatMap(t => [t, { action: 'exec', cmd: execCmd }]) : todo);
+  if (!interactive) return start({ ...baseState, todo: withExec(todoList(w, commits)) });
   let todo = todoList(w, commits);
   if (o['--autosquash']) {
     const out = [];
@@ -1617,7 +1638,8 @@ commands.rebase = (ctx, args) => {
     }
     todo = out;
   }
-  const text = todo.map(t => `${t.action} ${shortHash(t.hash)} ${t.msg}`).join('\n') + `\n
+  todo = withExec(todo);
+  const text = todo.map(t => (t.action === 'exec' ? `exec ${t.cmd}` : `${t.action} ${shortHash(t.hash)} ${t.msg}`)).join('\n') + `\n
 # Rebase ${shortHash(onto)}..${shortHash(head)} onto ${shortHash(onto)} (${pl(todo.length, 'command')})
 #
 # Commands:
@@ -1771,7 +1793,7 @@ commands.stash = (ctx, args) => {
     const indexCommit = makeCommit(repo, { message: `index on ${b}: ${baseMsg}`, parents: [head], tree: indexTree(repo) });
     const wtFlat = new Map(repo.index);
     const wt = worktree(repo);
-    for (const p of [...wtFlat.keys()]) { if (wt.has(p)) wtFlat.set(p, w.writeBlob(wt.get(p))); else wtFlat.delete(p); }
+    for (const p of [...wtFlat.keys()]) { if (wt.has(p)) wtFlat.set(p, w.writeBlob(isGitlink(wt.get(p)) ? wt.get(p) : cleanContent(repo, p, wt.get(p)))); else if (!absentOk(repo, p)) wtFlat.delete(p); }
     const untracked = new Map();
     if (includeUntracked) for (const p of st.untracked) untracked.set(p, w.writeBlob(wt.get(p)));
     const parents = [head, indexCommit];
@@ -2302,4 +2324,4 @@ export function levenshtein(a, b) {
   return dp[a.length][b.length];
 }
 
-export { commands, identity };
+export { commands, identity, treePairs, statLines, fileDiff, needRepo, needWorkTree, firstLine };
