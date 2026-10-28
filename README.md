@@ -1,5 +1,7 @@
 # Git Conquest
 
+**Live:** https://mosaddek2020.github.io/git-conquest/
+
 A self-paced, mastery-based course that takes a new developer from zero to hero in Git and GitHub.
 
 Each lesson teaches one idea from several angles (a story, an analogy, the mental model, the commands, how real teams use it, traps and tips), then drills it in a **hands-on lab** inside a git simulator that runs in the browser, then asks the learner to **prove** it in a quiz. The next lesson unlocks only when the current one is mastered (lab done, 80% on the quiz). Experienced developers can test out of a realm with a 90% exam.
@@ -18,7 +20,7 @@ Each lesson teaches one idea from several angles (a story, an analogy, the menta
 | `content/<realm>/<lesson>.md` | lesson text; `## <lens> \| Title` headings split it into perspectives, `## lab \| Title` is the lab brief |
 | `js/content/rNN-*.js` | each realm's labs (setup, tasks with checks and hints) and quizzes |
 | `tools/` | `build-content.mjs` bundles Markdown into `js/content/text.js`; `build.mjs` builds `dist/` |
-| `tests/` | `labs.mjs` (every lab solvable, no task passes early), `quizzes.mjs`, `replays.mjs` |
+| `tests/` | `modules.mjs` (every module loads), `labs.mjs` (every lab solvable, no task passes early), `quizzes.mjs`, `replays.mjs` |
 
 ## Working on it
 
@@ -31,3 +33,5 @@ node tools/build.mjs           # dist/ for any static web server
 ```
 
 There is no backend. Progress is stored in the browser's localStorage.
+
+Every push to `main` runs the tests, builds `dist/` and deploys it to GitHub Pages (`.github/workflows/pages.yml`).

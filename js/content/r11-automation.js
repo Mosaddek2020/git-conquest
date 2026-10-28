@@ -5,6 +5,11 @@ import { parseWorkflow } from '../git/github.js';
 const CI_YML = 'name: CI\non:\n  push:\n    branches: [main]\n  pull_request:\njobs:\n  test:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@v4\n      - uses: actions/setup-node@v4\n      - run: npm ci\n      - run: npm test\n';
 const CI_LINT_YML = CI_YML.replace('      - run: npm test\n', '      - run: npm run lint\n      - run: npm test\n');
 
+// Fake keys are assembled at run time so the repository itself holds no secret-shaped strings.
+const LIVE = 'sk_' + 'live_';
+const OLD_KEY = LIVE + '51HxQpay7d9F2kTq';
+const NEW_KEY = LIVE + '77NeWkeY3Xr9';
+
 const wfOk = (text, needs = ['npm test']) => {
   if (!text) return false;
   const wf = parseWorkflow(text);
@@ -141,7 +146,7 @@ export default {
         setup(H) {
           H.remote('you', 'shopfront', [
             { message: 'Create shopfront', files: { 'package.json': '{ "name": "shopfront" }\n', 'index.js': 'import { key } from "./config.js";\n' } },
-            { message: 'Add payment config', files: { 'config.js': 'export const key = "sk_' + 'live_51HxQpay7d9F2kTq";\n' } },
+            { message: 'Add payment config', files: { 'config.js': `export const key = "${OLD_KEY}";\n` } },
             { message: 'Add product page', files: { 'product.html': '<h1>Product</h1>\n' } },
           ]);
           H.cd('~');
@@ -151,7 +156,7 @@ export default {
           H.shell.extraCommands.payments = (args, out, sh) => {
             if (args[0] === 'rotate-key') {
               sh.world.labData.rotated = true;
-              out.push('Revoked key sk_' + 'live_51HxQ…kTq', 'New key: sk_' + 'live_77NeWkeY3Xr9 (shown once: store it somewhere safe)');
+              out.push(`Revoked key ${OLD_KEY.slice(0, 13)}…kTq`, `New key: ${NEW_KEY} (shown once: store it somewhere safe)`);
               return 0;
             }
             out.push('usage: payments rotate-key');
@@ -163,7 +168,7 @@ export default {
           { title: 'Find the commit that introduced the live key', solution: 'git log -S "sk_live" --oneline', check: t => t.ran(/^git log\b.*-S\s*"?sk_live/) },
           { title: 'Rotate the key first (the simulated payment provider CLI is called payments)', solution: 'payments rotate-key', check: t => !!t.world.labData.rotated },
           { title: 'Make config.js read the key from process.env.PAYMENT_KEY, ignore .env, and commit', solution: 'echo "export const key = process.env.PAYMENT_KEY;" > config.js && echo ".env" >> .gitignore && git add config.js .gitignore && git commit -m "fix: read the payment key from the environment"', check: t => /process\.env\.PAYMENT_KEY/.test(t.headFile('config.js') || '') && !/sk_live/.test(t.headFile('config.js') || '') && /\.env/.test(t.headFile('.gitignore') || '') },
-          { title: 'Store the new key as an Actions secret named PAYMENT_KEY', solution: 'gh secret set PAYMENT_KEY --body "sk_' + 'live_77NeWkeY3Xr9"', check: t => !!t.remote('you/shopfront').meta.secrets?.PAYMENT_KEY },
+          { title: 'Store the new key as an Actions secret named PAYMENT_KEY', solution: `gh secret set PAYMENT_KEY --body "${NEW_KEY}"`, check: t => !!t.remote('you/shopfront').meta.secrets?.PAYMENT_KEY },
           { title: 'Add .github/dependabot.yml for weekly npm updates, commit and push', solution: 'mkdir -p .github && edit .github/dependabot.yml && git add .github && git commit -m "chore: enable Dependabot" && git push', test: ['mkdir -p .github', { cmd: 'edit .github/dependabot.yml', edit: 'version: 2\nupdates:\n  - package-ecosystem: "npm"\n    directory: "/"\n    schedule:\n      interval: "weekly"\n' }, 'git add .github && git commit -m "chore: enable Dependabot" && git push'], check: t => { const b = t.remote('you/shopfront'); const flat = t.world.readTreeFlat(t.world.commit(b.refs['refs/heads/main']).tree); const h = flat.get('.github/dependabot.yml'); return !!h && /package-ecosystem/.test(t.world.objects.get(h).content) && flat.has('config.js') && /process\.env/.test(t.world.objects.get(flat.get('config.js')).content); } },
           { title: 'List the repository secrets', solution: 'gh secret list', check: t => t.ran(/^gh secret list/) },
         ],
