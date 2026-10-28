@@ -8,18 +8,24 @@ import { toast } from './ui/dom.js';
 const KEY = 'git-conquest:v1';
 export const PASS_MARK = 0.8;
 
+// one rank per realm, at about 92% of the XP for finishing it (lab + quiz + lenses), so a
+// learner who tests out of a realm or misses some perfect scores still reaches the top
 export const RANKS = [
   { xp: 0, name: 'Untracked', blurb: 'Git does not know you yet.' },
   { xp: 150, name: 'Staged', blurb: 'Ready to be committed.' },
-  { xp: 450, name: 'Committed', blurb: 'Your first snapshots are history.' },
-  { xp: 900, name: 'Time Traveller', blurb: 'You can move through history and undo safely.' },
-  { xp: 1500, name: 'Brancher', blurb: 'Parallel universes hold no fear.' },
-  { xp: 2200, name: 'Merger', blurb: 'You bring work together and settle conflicts.' },
-  { xp: 3000, name: 'Rebaser', blurb: 'You shape history with care.' },
-  { xp: 3900, name: 'Pusher', blurb: 'Your work lives on remotes.' },
-  { xp: 4900, name: 'Collaborator', blurb: 'Pull requests and reviews are second nature.' },
-  { xp: 6000, name: 'Maintainer', blurb: 'You run projects other people contribute to.' },
-  { xp: 7400, name: 'Git Hero', blurb: 'Zero to hero: the whole map is yours.' },
+  { xp: 700, name: 'Initialised', blurb: 'Git knows who you are and where you work.' },
+  { xp: 1600, name: 'Committed', blurb: 'Your first snapshots are history.' },
+  { xp: 2550, name: 'Time Traveller', blurb: 'You can move through history and undo safely.' },
+  { xp: 3250, name: 'Brancher', blurb: 'Parallel universes hold no fear.' },
+  { xp: 3900, name: 'Merger', blurb: 'You bring work together and settle conflicts.' },
+  { xp: 4600, name: 'Rebaser', blurb: 'You shape history with care.' },
+  { xp: 5400, name: 'Pusher', blurb: 'Your work lives on remotes.' },
+  { xp: 6200, name: 'Collaborator', blurb: 'Pull requests and reviews are second nature.' },
+  { xp: 6900, name: 'Contributor', blurb: 'Open-source projects welcome your patches.' },
+  { xp: 7700, name: 'Team Player', blurb: 'Your team ships through a workflow you understand.' },
+  { xp: 8650, name: 'Power User', blurb: 'Bisect, blame and hooks are in your toolbelt.' },
+  { xp: 9500, name: 'Automator', blurb: 'Robots test and ship every change you push.' },
+  { xp: 9750, name: 'Git Hero', blurb: 'Zero to hero: the whole map is yours.' },
 ];
 
 export const XP = { lens: 5, lab: 60, quiz: 50, perfect: 20, boss: 120, testOut: 40 };
@@ -207,4 +213,43 @@ export function resetAll() {
   save();
 }
 
-export function exportProgress() { return JSON.stringify(state); }
+// A progress code is the state as base64 JSON behind the storage key, so it can be pasted into
+// another browser (or between the Artifact and the public site) without any file download.
+export function exportProgress() {
+  return `${KEY}:${btoa(unescape(encodeURIComponent(JSON.stringify(state))))}`;
+}
+
+export function parseProgress(code) {
+  const text = String(code || '').trim();
+  if (!text.startsWith(KEY + ':')) throw new Error('That is not a progress code from this course.');
+  let data;
+  try { data = JSON.parse(decodeURIComponent(escape(atob(text.slice(KEY.length + 1))))); } catch { throw new Error('The code is damaged: copy it again in full.'); }
+  if (!data || typeof data !== 'object' || typeof data.xp !== 'number' || typeof data.lessons !== 'object') throw new Error('The code is damaged: copy it again in full.');
+  return { ...blank(), ...data };
+}
+
+const union = (a = [], b = []) => [...new Set([...a, ...b])];
+
+// merge keeps the best of both: every lesson's furthest progress, all badges and days, the higher XP
+export function importProgress(data, mode = 'merge') {
+  if (mode === 'replace') { state = { ...blank(), ...data }; save(); return; }
+  const lessons = { ...state.lessons };
+  for (const [id, b] of Object.entries(data.lessons)) {
+    const a = lessons[id];
+    lessons[id] = !a ? b : {
+      ...a, ...b,
+      lenses: union(a.lenses, b.lenses), learned: a.learned || b.learned, lab: a.lab || b.lab,
+      quizBest: Math.max(a.quizBest || 0, b.quizBest || 0), quizTries: Math.max(a.quizTries || 0, b.quizTries || 0),
+      mastered: a.mastered || b.mastered,
+    };
+  }
+  const missed = { ...data.missed, ...state.missed };
+  state = {
+    ...data, ...state, lessons, missed,
+    xp: Math.max(state.xp, data.xp),
+    badges: union(state.badges, data.badges), days: union(state.days, data.days).sort(), testedOut: union(state.testedOut, data.testedOut),
+    started: Math.min(state.started || Date.now(), data.started || Date.now()),
+    sandboxCount: Math.max(state.sandboxCount || 0, data.sandboxCount || 0), reviewed: Math.max(state.reviewed || 0, data.reviewed || 0),
+  };
+  save();
+}
