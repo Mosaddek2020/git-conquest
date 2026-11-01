@@ -79,6 +79,15 @@ The settings are plain text files. `~/.gitconfig` looks like this:
 	defaultBranch = main
 ```
 
+```replay
+title: Who you are goes into every commit
+show: graph
+setup: init
+step: git config --global user.name "Ada Okafor" && git config --global user.email ada@example.com | Set your name and email once, globally.
+step: git config --global init.defaultBranch main && git config --global --list | Config is plain key=value settings.
+step: commit "First commit"; git log --format="%h %an <%ae> %s" | Every new commit now records that identity.
+```
+
 ## analogy | Your name badge
 
 Configuring git is like filling in the name badge you wear at a conference. You only do it once at the door, but it is on display in every conversation you have afterwards.

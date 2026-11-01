@@ -21,6 +21,15 @@ ai-verify
 
 The rule is simple: **you are the author**. Your name is on the commit whoever typed the message. Many teams also ask you to disclose AI help with a trailer such as `Assisted-by:` or `Co-authored-by:`.
 
+```replay
+title: Staged diff in, honest message out
+show: areas,graph
+setup: init; commit "Create cart" cart.js
+step: echo "applyCoupon(code)" >> cart.js && git add cart.js | Stage exactly what this commit is about: that staged diff is the context the assistant should see.
+step: git diff --staged --stat | Check the scope before asking for a message: one idea, one file here.
+step: git commit -qm "feat(cart): apply coupon codes at checkout" | You edit the suggestion until it is true, then commit it as yours.
+```
+
 ## commands | Give it real context, then verify
 
 ```term

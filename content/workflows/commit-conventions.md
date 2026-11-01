@@ -37,6 +37,14 @@ The format:
 
 A `!` after the type/scope, or a `BREAKING CHANGE:` footer, marks a breaking change (→ major version).
 
+```replay
+title: Conventional commits make history searchable
+show: graph
+setup: init; commit "chore: create project"
+step: commit "feat(cart): apply coupon codes"; commit "fix(cart): round totals to the cent"; commit "docs: explain coupons" | A type, an optional scope, then a summary in the imperative.
+step: git log --oneline --grep "^feat" | Tools (and people) can now find every feature, or generate a changelog.
+```
+
 ## model | Atomic commits
 
 Independent of the message format, good commits are **atomic**:

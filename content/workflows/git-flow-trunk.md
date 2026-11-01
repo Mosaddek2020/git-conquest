@@ -24,6 +24,14 @@ git-flow
 
 Strength: clear, versioned releases and support for maintenance. Cost: many branches, many merges, slower integration.
 
+```replay
+title: Trunk-based: small branches, merged daily
+show: graph
+setup: init; commit "Create app"
+step: git switch -c small-change; commit "Add search box"; git switch main; git merge -q small-change | A short-lived branch: one small change, merged the same day.
+step: git switch -c another; commit "Add search results"; git switch main; git merge -q another | The trunk (main) stays releasable; history stays nearly linear.
+```
+
 ## model | Trunk-based development
 
 ```diagram

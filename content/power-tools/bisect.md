@@ -25,6 +25,15 @@ The number of steps grows very slowly: 16 commits need about 4 tests, 1,000 comm
 
 Bisect requires a **reliable test** that tells good from bad. It works best when every commit builds (another reason for atomic commits).
 
+```replay
+title: bisect finds the bad commit for you
+show: graph
+setup: init; commit "Release 1.0" app.txt; commit "Add search" search.txt; echo "BUG" >> search.txt && git commit -qam "Tweak search"; commit "Add footer" footer.txt; commit "Add header" header.txt
+step: git bisect start HEAD HEAD~4 | HEAD is bad, the 1.0 release was good: git checks out the commit halfway between.
+step: git bisect run ! grep -q BUG search.txt | bisect run tests each step for you (here: is the BUG marker present?) and names the first bad commit.
+step: git bisect reset | Back to where you started, now knowing exactly which commit to look at.
+```
+
 ## commands | Driving a bisect
 
 ```term

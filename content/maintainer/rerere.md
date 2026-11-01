@@ -18,6 +18,15 @@ With `rerere.enabled`:
 
 You still check and `git add` the file (unless `rerere.autoupdate` is on). rerere matches the conflicting hunks themselves, so it works even when the two sides swap places, as they do between a merge and a rebase.
 
+```replay
+title: Solve a conflict once
+show: graph,areas
+setup: init; commit "Create theme" styles.css; git switch -c redesign; commit "Brand purple" styles.css; git switch main; commit "Brand teal" styles.css; git config rerere.enabled true; git switch redesign
+step: git merge main | A conflict. rerere records its "preimage".
+step: printf "Create theme\nBrand purple\nBrand teal\n" > styles.css && git add styles.css | Staging your fix records the resolution.
+step: git merge --abort && git merge main | Next time the same conflict appears, git writes your recorded resolution for you.
+```
+
 ## commands | Turn it on and use it
 
 ```term

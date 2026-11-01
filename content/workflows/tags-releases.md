@@ -33,6 +33,14 @@ semver
 
 A **GitHub release** is a tag plus release notes (and optional downloadable files), shown on the repository's Releases page.
 
+```replay
+title: Tags mark releases
+show: graph
+setup: init; commit "Create app"; commit "Add search"
+step: git tag -a v1.0 -m "First release" | An annotated tag: a named, permanent pointer with a message.
+step: commit "Add filters"; git describe | describe names any commit relative to the nearest tag: v1.0-1-g…
+```
+
 ## commands | Tagging and releasing
 
 ```term

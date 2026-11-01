@@ -26,6 +26,15 @@ cd-pipeline
 
 The golden rule of pipelines: **build once, deploy many**. The commit that passed the tests is the commit that is deployed, first to staging, then to production. Nothing is rebuilt by hand in between.
 
+```replay
+title: Push to main, deploy to staging
+show: graph
+setup: github you/site; gh auth login; git clone -q https://github.com/you/site.git; cd site
+step: gh secret set DEPLOY_TOKEN --body example-token | The deploy credential lives in an Actions secret, never in the repository.
+step: mkdir -p .github/workflows && printf "#!/bin/sh\nhostctl upload --env \"$1\"\n" > deploy.sh && printf "on:\n  push:\n    branches: [main]\njobs:\n  test:\n    runs-on: ubuntu-latest\n    steps:\n      - run: npm test\n  deploy:\n    needs: test\n    environment: staging\n    runs-on: ubuntu-latest\n    steps:\n      - run: ./deploy.sh staging\n        env:\n          DEPLOY_TOKEN: ${{ secrets.DEPLOY_TOKEN }}\n" > .github/workflows/deploy.yml && git add . && git commit -qm "Deploy staging on every push" && git push -q | Each push to main now tests, and only then deploys to staging.
+step: gh run view | The deploy job waited for test (needs: test) and passed the secret in its env.
+```
+
 ## model | Anatomy of a deploy workflow
 
 ```yaml

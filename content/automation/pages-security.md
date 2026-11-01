@@ -17,6 +17,15 @@ The lesson the team wrote on the wall: **a secret that touched a public commit i
 
 A safe pattern for configuration: code reads secrets from **environment variables**; locally they come from an ignored `.env` file; in CI they come from Actions secrets; in production from the hosting platform's secret store.
 
+```replay
+title: Secrets belong in GitHub, not in git
+show: graph
+setup: github you/shop; gh auth login; git clone -q https://github.com/you/shop.git; cd shop
+step: gh secret set PAYMENT_KEY --body example-value | The value is encrypted on GitHub and only exposed to workflow steps that ask for it.
+step: gh secret list | You can list secret names and when they changed, never read the values back.
+step: git grep -n PAYMENT_KEY | And the repository itself holds no copy of the key (grep finds nothing, which is the point).
+```
+
 ## model | GitHub Pages
 
 **GitHub Pages** hosts a static website (HTML, CSS, JS) straight from a repository, free, at `https://<user>.github.io/<repo>`. You enable it in Settings → Pages, and publish either from a branch/folder (`main` / `docs/`) or with an Actions workflow that builds the site and deploys it. Documentation sites, portfolios and project landing pages often live there.

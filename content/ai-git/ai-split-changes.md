@@ -18,6 +18,15 @@ Agents work fast and wide. **Your job is to turn their output into small, honest
 
 Small commits make review possible, `git revert` precise and `git bisect` useful. "The AI did it all at once" is not a reason to commit it all at once.
 
+```replay
+title: Two ideas, two commits
+show: areas,graph
+setup: init; commit "Create app" app.js
+step: echo "if (!cart.length) return" >> app.js && echo "# Setup" > README.md | The assistant changed two unrelated things in one go.
+step: git add app.js && git commit -qm "Fix crash on an empty cart" | Commit the fix on its own…
+step: git add README.md && git commit -qm "Document setup" | …and the docs separately. Each commit is one reviewable, revertable idea.
+```
+
 ## commands | Review, ignore, stage by path
 
 ```term

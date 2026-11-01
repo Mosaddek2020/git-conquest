@@ -23,6 +23,15 @@ The app does not follow the library's `main`. It pins an exact commit. Updating 
 +Subproject commit 9e8d7c6…
 ```
 
+```replay
+title: A submodule pins another repository
+show: graph
+setup: github acme/hashlib; init; commit "Create app" app.js
+step: git submodule add https://github.com/acme/hashlib.git deps/hashlib | The library is cloned into deps/hashlib, and .gitmodules records where it comes from.
+step: git commit -qm "Add hashlib as a submodule" | The superproject stores one commit id for deps/hashlib, not its files.
+step: git submodule status | status shows exactly which commit of the library is pinned.
+```
+
 ## commands | The submodule lifecycle
 
 ```term

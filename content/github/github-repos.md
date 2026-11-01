@@ -28,6 +28,14 @@ A GitHub repository is a **bare git repository** on GitHub's servers (history an
 
 **Visibility**: *public* repositories can be read by anyone; *private* ones only by people you invite (collaborators) or your organisation's members. Writing (pushing) always requires permission.
 
+```replay
+title: A local project, published
+show: graph
+setup: init; commit "Create site" index.html; gh auth login
+step: gh repo create site --public --source=. --push | One command creates the GitHub repository, adds it as origin and pushes.
+step: git remote -v | origin now points at GitHub; origin/main appears in the graph.
+```
+
 ## commands | Creating and connecting repositories
 
 There are two directions, and both end with a local repository whose `origin` points at GitHub:

@@ -30,6 +30,14 @@ The fix is to **decide once, in the repository**, how text is stored. Git applie
 
 `core.autocrlf` is the older, *per-person* setting. `.gitattributes` is better because it is committed: the rule travels with the repository, so every teammate gets it.
 
+```replay
+title: .gitattributes settles line endings for everyone
+show: graph
+setup: init; commit "Create scripts" build.sh
+step: printf "* text=auto eol=lf\n*.bat text eol=crlf\n" > .gitattributes && git add .gitattributes && git commit -qm "Normalize line endings" | One committed file instead of everyone's personal autocrlf settings.
+step: git check-attr text eol -- build.sh | check-attr shows which rules apply to a path.
+```
+
 ## commands | Diagnose and fix
 
 ```term

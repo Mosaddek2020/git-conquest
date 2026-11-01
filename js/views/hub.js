@@ -147,7 +147,8 @@ class World3D {
     const N = curriculum.realms.length;
     // the whole path keeps roughly the same length however many realms there are
     const step = Math.min(7.2, 90 / Math.max(1, N - 1));
-    const realmPos = curriculum.realms.map((r, i) => new THREE.Vector3((i - (N - 1) / 2) * step, Math.sin(i * 0.7) * 2.2, Math.sin(i * 0.95) * 7));
+    // a shallow depth wave: deeper swings fold neighbouring realms on top of each other on screen
+    const realmPos = curriculum.realms.map((r, i) => new THREE.Vector3((i - (N - 1) / 2) * step, Math.sin(i * 0.7) * 2.2, Math.sin(i * 0.8) * 4.2));
     const origin = realmPos[0].clone().add(new THREE.Vector3(-7.2, 0, -2));
     this.realmPos = realmPos;
 
@@ -242,7 +243,8 @@ class World3D {
     this.focused = realmId;
     const p = this.realmPos[i].clone();
     const prev = i > 0 ? this.realmPos[i - 1] : this.realmPos[0].clone().add(new THREE.Vector3(-7.2, 0, -2));
-    this.goalTarget = p.clone().lerp(prev, 0.45).add(new THREE.Vector3(0, 1.5, 0));
+    // centre between the realm and the one before it (the first realm sits next to the git init root, so lean towards the realm)
+    this.goalTarget = p.clone().lerp(prev, i === 0 ? 0.2 : 0.45).add(new THREE.Vector3(0, 1.5, 0));
     this.goalR = r;
     if (announce) this.onRealm?.(realmId);
   }
@@ -353,18 +355,33 @@ class World3D {
       l.el.style.opacity = String(Math.max(0.35, Math.min(1, 1.6 - dist / 60)));
       l.el.style.zIndex = String(Math.round(1000 - dist * 10));
     }
-    // nearer labels win; a realm label that would overlap one is nudged below it
+    // lesson labels stay on their nodes; realm labels (and the current-lesson marker) are
+    // nudged below, or above, anything they would cover, nearest first
     const shown = this.labels.filter(l => l.el.style.display !== 'none').sort((a, b) => a.dist - b.dist);
+    const movable = l => l.kind === 'realm' || l.el.classList.contains('is-current');
     const placed = [];
+    const hits = (x, y, w, h) => placed.find(p => Math.abs(p.x - x) < (p.w + w) / 2 && Math.abs(p.y - y) < (p.h + h) / 2);
     for (const l of shown) {
       if (!l.size) l.size = [l.el.offsetWidth || 120, l.el.offsetHeight || 24];
+      if (movable(l)) continue;
+      // a lesson label that would sit on a nearer one is hidden rather than piled on top
+      if (l.kind === 'lesson' && hits(l.x, l.y, l.size[0], l.size[1])) { l.el.style.display = 'none'; continue; }
+      placed.push({ x: l.x, y: l.y, w: l.size[0], h: l.size[1] });
+    }
+    for (const l of shown) {
+      if (l.el.style.display === 'none') continue;
       const [lw, lh] = l.size;
       let y = l.y;
-      if (l.kind === 'realm' || l.el.classList.contains('is-current')) {
-        for (let k = 0; k < 4; k++) {
-          const hit = placed.find(p => Math.abs(p.x - l.x) < (p.w + lw) / 2 && Math.abs(p.y - y) < (p.h + lh) / 2);
-          if (!hit) break;
-          y = hit.y + (hit.h + lh) / 2 + 2;
+      if (movable(l)) {
+        let down = l.y, up = l.y;
+        for (let k = 0; k < 6; k++) {
+          const hd = hits(l.x, down, lw, lh);
+          if (!hd) { y = down; break; }
+          down = hd.y + (hd.h + lh) / 2 + 2;
+          const hu = hits(l.x, up, lw, lh);
+          if (!hu) { y = up; break; }
+          up = hu.y - (hu.h + lh) / 2 - 2;
+          y = down;
         }
         placed.push({ x: l.x, y, w: lw, h: lh });
       }

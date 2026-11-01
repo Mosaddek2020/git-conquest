@@ -27,6 +27,15 @@ remote-model
 
 Three different things all called "main": your `main`, your bookmark `origin/main`, and GitHub's actual `main`. Most remote confusion comes from mixing them up.
 
+```replay
+title: Cloning sets up origin
+show: graph
+setup: github acme/app; teammate acme/app "Add API"
+step: git clone -q https://github.com/acme/app.git && cd app | clone copies the whole history and checks out main.
+step: git remote -v | The remote you cloned from is called origin.
+step: git branch -a | origin/main is a remote-tracking branch: your last known position of main on GitHub.
+```
+
 ## commands | Clone and inspect remotes
 
 ```term

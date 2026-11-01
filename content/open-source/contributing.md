@@ -19,6 +19,15 @@ upstream  ◀──────── pull request from origin:branch ──
 7. Respond to review by pushing to the same branch.
 8. After merge: sync your fork, delete the branch.
 
+```replay
+title: Fork, branch, pull request
+show: graph
+setup: github oss/lib; gh auth login
+step: gh repo fork oss/lib --clone && cd lib | Your own copy on GitHub, cloned, with upstream pointing at the original.
+step: git switch -qc fix-typo; commit "Fix typo in README" README.md | The fix goes on a branch in your fork…
+step: git push -qu origin fix-typo && gh pr create --fill | …and the pull request asks the maintainers to pull it into theirs.
+```
+
 ## commands | Contributing with gh
 
 ```term

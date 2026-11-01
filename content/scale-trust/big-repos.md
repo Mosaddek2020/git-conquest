@@ -21,6 +21,15 @@ Shallow clones also fetch a **single branch** by default. The boundary commit is
 
 Sparse checkout in **cone mode** keeps files in the repository root plus the folders you name.
 
+```replay
+title: A shallow clone fetches only the newest commits
+show: graph
+setup: github acme/mono; teammate acme/mono "Add API service"; teammate acme/mono "Add web app"; teammate acme/mono "Add docs"
+step: git clone -q --depth 1 https://github.com/acme/mono.git && cd mono | Only the tip commit came down: fast for CI.
+step: git log --oneline | History stops at the shallow boundary.
+step: git fetch -q --unshallow && git log --oneline | When you need the rest, --unshallow fetches it.
+```
+
 ## commands | Clone less, work the same
 
 ```term

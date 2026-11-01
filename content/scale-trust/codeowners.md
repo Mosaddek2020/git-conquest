@@ -24,6 +24,14 @@ The fix was a one-line file: **CODEOWNERS**. It says which people or teams own w
 | a PR touching owned files | GitHub requests a review from those owners |
 | + branch rule *Require review from Code Owners* | at least one owner of **each** owned file must approve |
 
+```replay
+title: CODEOWNERS: the last match wins
+show: graph
+setup: init; commit "Create app" app.js
+step: mkdir -p .github && printf "* @acme/core\n/docs/ @acme/docs\n/payments/ @acme/payments\n" > .github/CODEOWNERS | Patterns map paths to the people who must review them.
+step: git add .github && git commit -qm "Add CODEOWNERS" | Once on the default branch, GitHub requests reviews from the owners of every file a PR touches.
+```
+
 ## commands | Write it, test it
 
 ```term

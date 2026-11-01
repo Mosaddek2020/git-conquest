@@ -19,6 +19,15 @@ rebase-vs-merge
 
 "Pushed" is a decent proxy for "shared", but the real question is: *could someone else have these commits and build on them?* Your personal feature branch on GitHub that nobody else touches can still be rebased (followed by `git push --force-with-lease`, covered in the Remotes realm).
 
+```replay
+title: Rewriting shared history gets rejected
+show: graph
+setup: github you/app; gh auth login; git clone -q https://github.com/you/app.git; cd app; commit "Add search" search.js; git push -q
+step: git commit --amend -qm "Add search (reworded)" | Amending a commit that is already pushed creates a different commit…
+step: git push | …and GitHub rejects the push: it would throw away the commit others may have.
+step: git reset -q --hard origin/main && git revert --no-edit HEAD | On shared branches, undo with a new commit (revert) instead of rewriting.
+```
+
 ## analogy | Editing a document after it is shared
 
 Editing your own draft before sending it is normal. But once you have emailed the document to ten people and they have started adding comments to page 4, you do not silently renumber the pages and send a "new" document with the same name. You send an addendum (a new commit) instead.

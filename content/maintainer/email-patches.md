@@ -31,6 +31,14 @@ Signed-off-by: Kim Park <kim@example.org>
 
 **Signed-off-by** is the *Developer Certificate of Origin*: "I wrote this, or have the right to submit it". Many projects require it on every patch (`-s`).
 
+```replay
+title: Commits by email
+show: graph
+setup: init; commit "Create library"; git switch -c ttl; commit "Add TTL support"; commit "Document TTL"; git switch main
+step: git format-patch main..ttl -o ../outbox | Each commit becomes an email-ready .patch file with author, date and message.
+step: git am ../outbox/0001-Add-TTL-support.patch ../outbox/0002-Document-TTL.patch | The maintainer applies the series. The author stays the contributor; the maintainer becomes the committer.
+```
+
 ## commands | Both sides of the list
 
 As a contributor:

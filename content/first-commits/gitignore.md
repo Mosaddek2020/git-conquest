@@ -26,6 +26,15 @@ All of this is prevented by one small text file named `.gitignore`.
 
 `.gitignore` only affects **untracked** files. If a file is already committed, adding it to `.gitignore` does nothing until you stop tracking it with `git rm --cached`.
 
+```replay
+title: Ignored files stop showing up
+show: areas
+setup: init; commit "Create app" app.js
+step: echo "PASSWORD=change-me" > .env && mkdir -p node_modules && echo "lib" > node_modules/lib.js && git status --short | Untracked noise: a secrets file and a dependency folder.
+step: printf ".env\nnode_modules/\n" > .gitignore && git status --short | With a .gitignore, only the .gitignore itself is new.
+step: git add .gitignore && git commit -qm "Ignore env files and dependencies" | Commit it so everyone gets the same rules.
+```
+
 ## commands | Pattern syntax
 
 `.gitignore` lists one pattern per line:

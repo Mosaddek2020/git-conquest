@@ -26,6 +26,14 @@ $ git worktree list
 $ git worktree remove ../hotfix
 ```
 
+```replay
+title: Two branches checked out at once
+show: graph
+setup: init; commit "Create app"; git switch -c feature; commit "Half-done feature"; git switch main
+step: git worktree add ../hotfix -b hotfix | A second working directory for a new hotfix branch, sharing the same repository.
+step: git worktree list | Your feature work stays untouched in the first folder while you fix production in the second.
+```
+
 ## model | Submodules
 
 A **submodule** embeds another repository inside yours, pinned to a **specific commit**. The parent repository stores only the submodule's URL (in `.gitmodules`) and the pinned commit id.

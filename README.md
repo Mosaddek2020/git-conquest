@@ -6,9 +6,9 @@ A self-paced, mastery-based course that takes a new developer from zero to hero 
 
 Each lesson teaches one idea from several angles (a story, an analogy, the mental model, the commands, how real teams use it, traps and tips), then drills it in a **hands-on lab** inside a git simulator that runs in the browser, then asks the learner to **prove** it in a quiz. The next lesson unlocks only when the current one is mastered (lab done, 80% on the quiz). Experienced developers can test out of a realm with a 90% exam.
 
-- 16 realms, 96 lessons, 96 labs, 586 quiz questions
-- From `git init` to signed commits, Git LFS, monorepos, secret scrubbing, CODEOWNERS and merge queues, maintainer tools (range-diff, rerere, patches by email, backports, submodules) and working with AI assistants and agents
-- A real git engine in `js/git/`: actual SHA-1 object ids, index, merges and conflicts, rebase and `rebase -i`, cherry-pick, revert, stash, reflog, bisect, tags, worktrees, hooks, remotes, SSH commit signing, `.gitattributes` line endings, Git LFS, shallow/partial/sparse clones, `filter-repo`, rerere, range-diff, format-patch/am/apply, notes, cherry, submodules, plus a simulated GitHub (forks, PRs, reviews, branch protection, CODEOWNERS, merge queues, push protection, issues, releases, Actions, secrets) and the `gh` CLI, and a scripted `ai` assistant for the AI realm
+- 17 realms, 107 lessons, 107 labs, 643 quiz questions, 77 step-through replays
+- From `git init` to signed commits, Git LFS, monorepos, secret scrubbing, CODEOWNERS and merge queues, Dependabot, matrix builds and reusable workflows, maintainer tools (range-diff, rerere, patches by email, backports, submodules), working with AI assistants and agents, and everyday mastery: searching history by content, stacked PRs, `-X ours/theirs`, per-folder identities and `.mailmap`, housekeeping, bundles and release archives
+- A real git engine in `js/git/`: actual SHA-1 object ids, index, merges and conflicts, rebase and `rebase -i`, cherry-pick, revert, stash, reflog, bisect, tags, worktrees, hooks, remotes, SSH commit signing, `.gitattributes` line endings, Git LFS, shallow/partial/sparse clones, `filter-repo`, rerere, range-diff, format-patch/am/apply, notes, cherry, submodules, `log -L`/`-G`, blame ignore-revs, `rebase --update-refs`, merge `-X`/`-s ours`, `includeIf` and `.mailmap`, gc/maintenance/fsck, bundles and `git archive`, plus a simulated GitHub (forks, PRs, stacked-PR retargeting, reviews, branch protection, CODEOWNERS, merge queues, push protection, Dependabot alerts and update PRs, issues, releases, Actions with matrices and reusable workflows, secrets) and the `gh` CLI including `gh api --jq`, and a scripted `ai` assistant for the AI realm
 - A 3D world map (three.js) of the curriculum drawn as a commit graph, a sandbox, a searchable Field Guide, ranks, badges and a spaced-review deck
 
 ## Layout
@@ -16,7 +16,7 @@ Each lesson teaches one idea from several angles (a story, an analogy, the menta
 | Path | What |
 |---|---|
 | `index.html`, `css/app.css` | page shell and design system |
-| `js/git/` | the simulator: `world` (objects, filesystem), `core` (refs, status, merges), `git` (porcelain), `remote` (clone/fetch/push/pull), `github` (GitHub + `gh`), `extras` (signing, LFS, sparse, filter-repo, rerere, patches, notes, submodules), `filters` (.gitattributes, LFS pointers), `ai` (the assistant), `shell` |
+| `js/git/` | the simulator: `world` (objects, filesystem), `core` (refs, status, merges, config layers, mailmap), `git` (porcelain), `remote` (clone/fetch/push/pull), `github` (GitHub + `gh`), `actions` (the Actions runner), `extras` (signing, LFS, sparse, filter-repo, rerere, patches, notes, submodules), `everyday` (gc, maintenance, bundles, archive), `ghextra` (`gh api`, Dependabot), `filters` (.gitattributes, LFS pointers), `ai` (the assistant), `shell` |
 | `js/ui/`, `js/views/` | terminal, commit graph, panels, quiz, replays, diagrams, pages |
 | `content/<realm>/<lesson>.md` | lesson text; `## <lens> \| Title` headings split it into perspectives, `## lab \| Title` is the lab brief |
 | `js/content/rNN-*.js` | each realm's labs (setup, tasks with checks and hints) and quizzes |

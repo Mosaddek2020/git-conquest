@@ -16,6 +16,15 @@ Code review is not about catching people out. It is how teams share knowledge, k
 
 GitHub does not let you approve your own pull request: review is, by definition, a second person.
 
+```replay
+title: A review on a pull request
+show: graph
+setup: github acme/app; gh auth login; git clone -q https://github.com/acme/app.git; cd app; git switch -c fix-typo; commit "Fix typo in README" README.md; git push -qu origin fix-typo; gh pr create --fill
+step: gh pr diff 1 | Read the change first, line by line.
+step: gh pr view 1 | Then the description and status: what problem does it solve, and how was it tested?
+step: gh pr comment 1 --body "Thanks! Could you also fix the same typo in docs/?" | Comments are specific, kind and actionable.
+```
+
 ## commands | Reviewing from the terminal
 
 ```term

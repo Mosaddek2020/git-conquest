@@ -27,6 +27,15 @@ Because each release is a **tag** and the pipeline deploys exactly what it is gi
 
 After restoring, fix forward on `main`: often `git revert <commit>`, which adds a new commit undoing the bad one without rewriting shared history. Then release a new patch version (`v1.2.1`). Never move or reuse an existing tag: `v1.2.0` means one exact commit forever.
 
+```replay
+title: Release, then roll back with a revert
+show: graph
+setup: github you/app; gh auth login; git clone -q https://github.com/you/app.git; cd app; commit "Add search" search.js; git push -q
+step: git tag -a v1.1 -m "Release 1.1" && git push -q origin v1.1 | A tag marks exactly what was released.
+step: commit "Faster search" search.js; git push -q | The next change ships…
+step: git revert --no-edit HEAD && git push -q | …and breaks production. Rolling back is a new commit that undoes it: history keeps both, and the next deploy restores the old behaviour.
+```
+
 ## model | Making the pipeline catch it next time
 
 Forecast's `/health` endpoint said `ok` while the home page crashed. A **health check** only proves the process is running. A **smoke test** exercises what users actually do:

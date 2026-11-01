@@ -24,6 +24,15 @@ size 188743680
 
 GitHub's limits: a warning above **50 MB**, a hard reject above **100 MB** per file. Big files need LFS (or should not be in git at all: build outputs belong in releases or artifact storage).
 
+```replay
+title: Big files go to LFS, pointers go to git
+show: graph,areas
+setup: init; commit "Create game" main.c
+step: git lfs install && git lfs track "*.psd" | track writes a rule to .gitattributes.
+step: echo "artwork" > logo.psd && git add .gitattributes logo.psd && git commit -qm "Add logo artwork" | git stores a small pointer; the real file goes to LFS storage.
+step: git lfs ls-files | ls-files lists what LFS manages.
+```
+
 ## commands | Track, migrate, inspect
 
 ```term

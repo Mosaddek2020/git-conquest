@@ -19,6 +19,14 @@ That question has a command: `git range-diff`.
 
 Commits are matched first by identical patches, then by similar subject lines. A rebase changes every commit id, but not the patches, so unchanged commits show as `=`.
 
+```replay
+title: What changed between v1 and v2 of a series?
+show: graph
+setup: init; commit "Base"; git switch -c topic; commit "Add tokenizer"; commit "Handle empty input"; git branch topic-v1; git switch main; commit "Main moves on"; git switch topic
+step: git rebase -q main | After a rebase every commit id changes, so plain diffs are no help.
+step: git range-diff main topic-v1 topic | range-diff compares the two series patch by patch: "=" means the patch itself is unchanged.
+```
+
 ## commands | Everyday forms
 
 ```term

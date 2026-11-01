@@ -36,6 +36,14 @@ Delete `.git` and the folder is an ordinary folder again, with **all history gon
 > [!IMPORTANT]
 > One project, one repository. Run `git init` in the project's top folder, not in your home folder. A repository in `~` would try to track every file you own.
 
+```replay
+title: From an empty folder to a first commit
+show: areas,graph
+step: git init -q -b main | An empty repository: a .git folder, no commits yet.
+step: echo "# Demo" > README.md && git add README.md | A first file, staged.
+step: git commit -qm "Initial commit" | The first commit: the history has begun.
+```
+
 ## analogy | Installing a flight recorder
 
 Think of `git init` as installing a flight recorder (a "black box") in an aircraft. Installing it does not record anything yet and does not change how the plane flies. But from now on, the recorder is there, ready to capture exactly what happens.

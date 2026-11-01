@@ -24,11 +24,12 @@ export const RANKS = [
   { xp: 6900, name: 'Contributor', blurb: 'Open-source projects welcome your patches.' },
   { xp: 7700, name: 'Team Player', blurb: 'Your team ships through a workflow you understand.' },
   { xp: 8650, name: 'Power User', blurb: 'Bisect, blame and hooks are in your toolbelt.' },
-  { xp: 9500, name: 'Automator', blurb: 'Robots test and ship every change you push.' },
-  { xp: 10550, name: 'Gatekeeper', blurb: 'Signed, sane and protected: your repositories scale.' },
-  { xp: 11350, name: 'Maintainer', blurb: 'You keep projects healthy for years.' },
-  { xp: 12300, name: 'AI Pilot', blurb: 'Assistants work for you; you stay the author.' },
-  { xp: 13050, name: 'Git Hero', blurb: 'Zero to hero: the whole map is yours.' },
+  { xp: 9750, name: 'Automator', blurb: 'Robots test and ship every change you push.' },
+  { xp: 10800, name: 'Gatekeeper', blurb: 'Signed, sane and protected: your repositories scale.' },
+  { xp: 11600, name: 'Maintainer', blurb: 'You keep projects healthy for years.' },
+  { xp: 12550, name: 'AI Pilot', blurb: 'Assistants work for you; you stay the author.' },
+  { xp: 13500, name: 'Fluent', blurb: 'Stacks, sides, identities and housekeeping: git is second nature.' },
+  { xp: 14600, name: 'Git Hero', blurb: 'Zero to hero: the whole map is yours.' },
 ];
 
 export const XP = { lens: 5, lab: 60, quiz: 50, perfect: 20, boss: 120, testOut: 40 };

@@ -16,6 +16,15 @@ Every workflow run attached to a PR shows up as a **status check** on its latest
 
 Each push to the PR branch triggers new runs, so the checks always reflect the **latest** commit.
 
+```replay
+title: A failing check blocks the PR
+show: graph
+setup: github you/app; gh auth login; git clone -q https://github.com/you/app.git; cd app; mkdir -p .github/workflows && printf "on: [push, pull_request]\njobs:\n  test:\n    runs-on: ubuntu-latest\n    steps:\n      - run: npm test\n" > .github/workflows/ci.yml && git add .github && git commit -qm "ci: run tests" && git push -q
+step: git switch -qc feature && echo "BUG: off by one" > app.js && git add app.js && git commit -qm "Add app" && git push -qu origin feature && gh pr create --fill | The pull request runs CI on its branch…
+step: gh pr checks 1 | …and the check fails: the tests caught the bug before it reached main.
+step: echo "fixed" > app.js && git commit -qam "Fix the off-by-one" && git push -q && gh pr checks 1 | A new push re-runs the checks. Green: now it can be merged.
+```
+
 ## commands | Following checks from the terminal
 
 ```term

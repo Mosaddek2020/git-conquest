@@ -34,6 +34,15 @@ $ git log --grep="incident"            # search messages
 
 So blame is the **starting point**: take the commit id, then `git show` it, then search further back with `git log -S` if needed.
 
+```replay
+title: Who wrote this line, and why?
+show: graph
+setup: init; commit "Create pricing" pricing.js; commit "Round prices" pricing.js; commit "Add tax" tax.js
+step: git blame pricing.js | blame shows the commit that last changed each line…
+step: git log -S "Round prices" --oneline | …and the pickaxe finds when a piece of text was added or removed.
+step: git show --stat HEAD~1 | Then read that commit: its message should explain why.
+```
+
 ## analogy | Layers in an archaeological dig
 
 Each commit is a layer of soil. `git blame` labels every artefact with the layer it was found in. Sometimes a later layer simply disturbed an older object (a reformat). An experienced archaeologist digs deeper (`git log -S`) before concluding who made the pot.

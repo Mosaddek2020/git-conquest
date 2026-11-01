@@ -20,6 +20,14 @@ The maintainers settled on a routine: **ask git which fixes are missing, cherry-
 
 **Notes** attach extra text to a commit after the fact, without rewriting it: "Backported to 2.x", "Reviewed-by", "CVE-2026-1234". They live in `refs/notes/commits` and show up in `git log`.
 
+```replay
+title: Backport a fix, traceably
+show: graph
+setup: init; commit "Release 1.0"; git branch release/1.x; commit "New dashboard"; commit "Fix parser overflow" parser.js; git switch release/1.x
+step: git cherry-pick -x main | Only the fix is copied to release/1.x, with "(cherry picked from commit …)" in its message.
+step: git cherry -v release/1.x main | cherry marks with - the commits whose change is already on release/1.x.
+```
+
 ## commands | The backport routine
 
 ```term

@@ -18,6 +18,15 @@ Agents commit like people in a hurry. **Before review, you turn their branch int
 
 This is safe because the branch is **not shared yet**. Once others build on it, the golden rule applies: do not rewrite it.
 
+```replay
+title: An agent works on its own branch
+show: graph
+setup: init; commit "Create login page" login.js; git switch -c agent/fix-redirect; commit "agent: wip" login.js; commit "agent: try again" login.js; commit "agent: fix tests" login.js; git switch main
+step: git log --oneline main..agent/fix-redirect | The agent's commits live only on its branch: main has not changed.
+step: git diff --stat main agent/fix-redirect | You review the result as one diff, not as three noisy commits.
+step: git merge --squash agent/fix-redirect && git commit -qm "Fix the login redirect loop" | You land it as one commit with a message you wrote and can stand behind.
+```
+
 ## commands | Clean it up
 
 ```term

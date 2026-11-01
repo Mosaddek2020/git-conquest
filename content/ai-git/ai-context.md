@@ -18,6 +18,15 @@ Many organisations route AI tools through a **gateway** with data-loss preventio
 
 When a secret shows up in a diff, the prompt is not the only problem: **a secret file is tracked in git**. Untrack it, ignore it, and if it was ever pushed, rotate it (Realm 12).
 
+```replay
+title: Share context, never secrets
+show: areas
+setup: init; commit "Create API" api.js; commit "Add auth" auth.js
+step: echo "TOKEN=change-me" > .env && echo ".env" > .gitignore && git add .gitignore && git commit -qm "Ignore .env" | Secrets stay out of git, and out of anything you paste into an assistant.
+step: git ls-files | What you can share: the tracked files…
+step: git log --oneline -3 | …and recent history, which explains why the code looks the way it does.
+```
+
 ## commands | Narrow the context
 
 ```term

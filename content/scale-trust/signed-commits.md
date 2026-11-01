@@ -23,6 +23,15 @@ Git can sign with GPG, X.509 or **SSH keys**. SSH signing is the simplest today:
 
 Verifying on *your* machine needs one more thing: an **allowed signers** file, a list of "this email uses this key". It is your local address book of trusted keys.
 
+```replay
+title: Sign a commit with your SSH key
+show: graph
+setup: init; commit "Create app"
+step: ssh-keygen -t ed25519 -C dev@example.com && git config gpg.format ssh && git config user.signingkey ~/.ssh/id_ed25519.pub | git can sign with the SSH key you already have.
+step: echo "v2" > app.txt && git add app.txt && git commit -q -S -m "Signed change" | -S signs this commit (commit.gpgsign true signs them all).
+step: git log --format="%h %G? %s" | %G? shows each commit's signature status: N means unsigned, E means signed but not checkable yet (no allowed signers file), G a good signature.
+```
+
 ## commands | Set up SSH signing once
 
 ```term

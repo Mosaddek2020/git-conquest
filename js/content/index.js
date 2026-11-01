@@ -14,6 +14,7 @@ import automation from './r11-automation.js';
 import scaleTrust from './r12-scale-trust.js';
 import maintainer from './r13-maintainer.js';
 import aiGit from './r14-ai-git.js';
-import heroTrials from './r15-hero-trials.js';
+import everyday from './r15-everyday.js';
+import heroTrials from './r16-hero-trials.js';
 
-export const realms = [basecamp, firstCommits, timeTravel, branching, merging, rewriting, remotes, github, openSource, workflows, powerTools, automation, scaleTrust, maintainer, aiGit, heroTrials];
+export const realms = [basecamp, firstCommits, timeTravel, branching, merging, rewriting, remotes, github, openSource, workflows, powerTools, automation, scaleTrust, maintainer, aiGit, everyday, heroTrials];

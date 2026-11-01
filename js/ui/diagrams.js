@@ -580,6 +580,103 @@ D['ai-verify'] = () => {
   return figure(d, 'An assistant is fast and confident, sometimes wrongly. The verify step is not optional.');
 };
 
+D['history-search'] = () => {
+  const d = mk(720, 230, 'Three ways to search history by content: pickaxe, line history and blame');
+  const xs = [70, 190, 310, 430, 550, 660];
+  xs.forEach((x, i) => { if (i) d.line(xs[i - 1] + 10, 120, x - 10, 120, { color: 'main' }); d.commit(x, 120, { color: i === 2 ? 'bad' : i === 4 ? 'muted' : 'main', hollow: i === 4 }); });
+  d.text(310, 152, 'Math.floor', { font: 'mono', size: 12, color: 'bad' });
+  d.text(430, 152, 'reformat', { font: 'mono', size: 12, color: 'muted' });
+  d.box(20, 20, 210, 58, 'log -S / -G', { sub: 'commits that add or remove it', color: 'bad', subSize: 11.5 });
+  d.box(255, 20, 210, 58, 'log -L :discount:', { sub: 'one function, every change', color: 'info', subSize: 11.5 });
+  d.box(490, 20, 210, 58, 'blame + ignore-revs', { sub: 'looks past the reformat', color: 'accent', subSize: 11.5 });
+  d.arrow(125, 80, 300, 108, { color: 'bad', curve: 10 });
+  d.arrow(595, 80, 322, 110, { color: 'accent', curve: -30, dash: '5 4' });
+  d.text(360, 205, 'Ask "which change?" directly instead of reading the log from the top.', { size: 12.5, color: 'muted' });
+  return figure(d, 'The pickaxe and line history jump straight to the commit that matters; an ignore-revs file stops mechanical commits hiding the real author.');
+};
+
+D['stacked-prs'] = () => {
+  const d = mk(720, 250, 'A stack of three branches and pull requests, each based on the one below');
+  d.line(40, 190, 680, 190, { color: 'main', width: 3 });
+  d.commit(80, 190, { color: 'main' }); d.commit(160, 190, { color: 'main' });
+  d.tag(120, 222, 'main', { color: 'main', anchor: 'middle', solid: true });
+  const st = [['refunds-model', 250, 150, 'PR #1 → main'], ['refunds-api', 400, 110, 'PR #2 → refunds-model'], ['refunds-ui', 550, 70, 'PR #3 → refunds-api']];
+  let px = 160, py = 190;
+  for (const [name, x, y, pr] of st) {
+    d.path(`M${px} ${py} Q${(px + x) / 2} ${y} ${x - 10} ${y}`, { color: 'feat' });
+    d.commit(x, y, { color: 'feat' });
+    d.tag(x + 16, y, name, { color: 'feat' });
+    d.text(x + 16, y + 26, pr, { anchor: 'start', size: 11.5, color: 'muted', font: 'mono' });
+    px = x + 10; py = y;
+  }
+  d.text(360, 30, 'git rebase --update-refs origin/main  (from the top branch: all three move)', { font: 'mono', size: 12.5, color: 'accent', weight: 600 });
+  return figure(d, 'Each PR shows only its own commits. One rebase from the top keeps the whole stack together.');
+};
+
+D['config-layers'] = () => {
+  const d = mk(720, 230, 'Git config layers: global, conditional includes and local, later ones win');
+  const layers = [['~/.gitconfig', 'user.email = mira.codes@…', 'muted'], ['[includeIf "gitdir:~/work/"]', '→ ~/.gitconfig-work: mira@acme.example', 'accent'], ['.git/config', 'per-repository overrides', 'info']];
+  layers.forEach(([t, sub, c], i) => d.box(40 + i * 22, 30 + i * 56, 420, 48, t, { sub, color: c, align: 'start', subSize: 11.5, titleSize: 13.5 }));
+  d.arrow(520, 60, 520, 168, { color: 'text', label: 'later wins', dy: 0, lx: 590, ly: 118 });
+  d.box(560, 30, 140, 70, '~/oss/lib', { sub: 'personal email', color: 'muted', subSize: 11.5 });
+  d.box(560, 120, 140, 70, '~/work/api', { sub: 'work email', color: 'accent', subSize: 11.5 });
+  d.text(360, 218, 'git config --show-origin user.email tells you which layer answered.', { size: 12.5, color: 'muted' });
+  return figure(d, 'Conditional includes switch identity by folder (gitdir:) or by remote URL (hasconfig:remote.*.url:).');
+};
+
+D['loose-packed'] = () => {
+  const d = mk(720, 230, 'Loose objects are packed by gc; unreachable ones are pruned after the reflog lets go');
+  for (let i = 0; i < 12; i++) d.box(30 + (i % 4) * 42, 40 + Math.floor(i / 4) * 40, 32, 30, null, { r: 4, color: 'info', fill: 's2' });
+  d.text(115, 172, 'loose objects', { size: 12.5, color: 'muted' });
+  d.arrow(215, 95, 300, 95, { color: 'main', label: 'git gc' });
+  d.box(310, 50, 150, 90, 'pack file', { sub: 'compressed, deltas\n+ commit-graph', color: 'main', subSize: 11.5 });
+  d.box(520, 30, 180, 56, 'reachable', { sub: 'refs, tags, stash, reflog', color: 'ok', subSize: 11.5 });
+  d.box(520, 110, 180, 56, 'unreachable', { sub: 'pruned after the grace period', color: 'bad', subSize: 11.5 });
+  d.arrow(462, 85, 516, 60, { color: 'ok' });
+  d.arrow(462, 110, 516, 136, { color: 'bad', dash: '5 4' });
+  d.text(360, 212, 'To delete for real: reflog expire --expire=now --all, then gc --prune=now (and rotate any leaked secret).', { size: 12, color: 'muted' });
+  return figure(d, 'Packing keeps a repository small and fast; reachability decides what survives.');
+};
+
+D['bundle-flow'] = () => {
+  const d = mk(720, 230, 'A bundle carries history to an offline machine; an archive is one tree for a release');
+  d.box(20, 40, 170, 80, 'laptop', { sub: 'full repository', color: 'main' });
+  d.box(275, 40, 170, 80, 'USB stick', { sub: 'firmware.bundle\nupdate.bundle', color: 'accent', subSize: 11.5 });
+  d.box(530, 40, 170, 80, 'air-gapped lab', { sub: 'clone, then pull', color: 'info' });
+  d.arrow(192, 80, 271, 80, { color: 'accent', label: 'bundle create' });
+  d.arrow(447, 80, 526, 80, { color: 'info', label: 'clone / pull' });
+  d.box(20, 150, 170, 56, 'tag v2.1', { color: 'main' });
+  d.box(275, 150, 300, 56, 'firmware-2.1.tar.gz', { sub: 'files only, minus export-ignore', color: 'ok', subSize: 11.5 });
+  d.arrow(192, 178, 271, 178, { color: 'ok', label: 'archive' });
+  return figure(d, 'Bundles move history without a server. Archives publish one tree without history, tests or CI config.');
+};
+
+D['dependabot'] = () => {
+  const d = mk(720, 220, 'Dependabot: advisory database, alerts, security update PRs and version updates');
+  d.box(20, 40, 160, 76, 'Advisory DB', { sub: 'known vulnerable\nversions', color: 'bad', subSize: 11.5 });
+  d.box(220, 40, 160, 76, 'Alert', { sub: 'lodash < 4.17.21\nhigh', color: 'warn', subSize: 11.5 });
+  d.box(420, 40, 160, 76, 'Security PR', { sub: 'bump to the fix,\nCI runs', color: 'main', subSize: 11.5 });
+  d.box(610, 40, 95, 76, 'merged', { sub: 'alert fixed', color: 'ok', subSize: 11.5 });
+  d.arrow(182, 78, 216, 78, { color: 'muted' }); d.arrow(382, 78, 416, 78, { color: 'muted' }); d.arrow(582, 78, 606, 78, { color: 'muted' });
+  d.path('M300 118 Q300 160 380 160', { color: 'muted', dash: '5 4' });
+  d.text(388, 164, 'or dismiss, with a reason', { anchor: 'start', size: 12, color: 'muted' });
+  d.box(20, 150, 300, 52, 'dependabot.yml', { sub: 'scheduled version updates', color: 'info', subSize: 11.5 });
+  return figure(d, 'Alerts tell you; security updates offer the fix; version updates keep you current so fixes stay small.');
+};
+
+D['actions-matrix'] = () => {
+  const d = mk(720, 230, 'One matrix job fans out into several runs; deploy jobs call one reusable workflow');
+  d.box(20, 80, 140, 60, 'test', { sub: 'matrix: node', color: 'main', subSize: 11.5 });
+  const cells = [['node 20', 'ok'], ['node 22', 'ok'], ['node 18', 'bad']];
+  cells.forEach(([t, c], i) => { d.box(210, 30 + i * 62, 120, 46, t, { color: c, titleSize: 13 }); d.arrow(162, 110, 206, 53 + i * 62, { color: 'muted', width: 1.6 }); });
+  d.box(400, 40, 140, 56, 'staging', { sub: 'uses: deploy.yml', color: 'info', subSize: 11.5 });
+  d.box(400, 124, 140, 56, 'production', { sub: 'uses: deploy.yml', color: 'info', subSize: 11.5 });
+  d.box(590, 72, 115, 76, 'deploy.yml', { sub: 'on: workflow_call', color: 'accent', subSize: 11 });
+  d.arrow(542, 68, 586, 98, { color: 'accent' }); d.arrow(542, 152, 586, 124, { color: 'accent' });
+  d.text(360, 220, 'gh api repos/{owner}/{repo}/actions/runs --jq … to report on all of it', { font: 'mono', size: 12, color: 'muted' });
+  return figure(d, 'The matrix catches version-specific bugs; one shared deploy workflow means one place to change.');
+};
+
 export function renderDiagram(name) {
   const fn = D[name];
   if (!fn) return h('div', { class: 'figure' }, `Missing diagram: ${name}`);

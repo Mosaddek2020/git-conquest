@@ -31,6 +31,14 @@ A contributor's setup has three repositories:
 
 The pull request goes **from your fork's branch to upstream's main**.
 
+```replay
+title: origin is yours, upstream is theirs
+show: graph
+setup: github oss/lib; gh auth login; gh repo fork oss/lib --clone; cd lib
+step: git remote -v | Two remotes: origin (your fork) and upstream (the original project).
+step: git fetch -q upstream && git branch -a | upstream/main shows what the project has; origin/main shows your fork.
+```
+
 ## commands | Fork and wire up remotes
 
 ```term

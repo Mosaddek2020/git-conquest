@@ -140,6 +140,102 @@ const SCENARIOS = {
     },
     note: 'Two branches changed the same line. Try: git merge chef-special',
   },
+  rebase: {
+    title: 'Stuck in the middle of a rebase',
+    cwd: '~/api',
+    setup: (H) => {
+      H.repo('~/api');
+      H.commit('Create API', { 'routes.js': 'get("/users");\nget("/orders");\n' });
+      H.run('git switch -q -c feature/search');
+      H.commit('Add search route', { 'routes.js': 'get("/users");\nget("/orders");\nget("/search");\n' });
+      H.commit('Paginate search', { 'search.js': 'export const pageSize = 20;\n' });
+      H.run('git switch -q main');
+      H.commit('Add products route', { 'routes.js': 'get("/users");\nget("/orders");\nget("/products");\n' });
+      H.run('git switch -q feature/search');
+      H.run('git rebase main || true');
+    },
+    note: 'A rebase stopped on a conflict in routes.js. Try: git status, fix the file, git add routes.js && git rebase --continue (or git rebase --abort).',
+  },
+  stack: {
+    title: 'A stack of branches, behind main',
+    cwd: '~/payments',
+    setup: (H) => {
+      H.repo('~/payments');
+      H.commit('Create payments service', { 'index.js': 'export {};\n' });
+      H.run('git switch -q -c refunds-model');
+      H.commit('Add refund model', { 'refund.js': 'export class Refund {}\n' });
+      H.run('git switch -q -c refunds-api');
+      H.commit('Add refunds API', { 'api.js': 'export const create = () => {};\n' });
+      H.run('git switch -q -c refunds-ui');
+      H.commit('Add refund button', { 'button.js': 'export const Button = () => "Refund";\n' });
+      H.run('git switch -q main');
+      H.commit('Add request logging', { 'log.js': 'export const log = () => {};\n' });
+      H.run('git switch -q refunds-ui');
+    },
+    note: 'Three stacked branches, and main has moved. Try: git log --oneline --graph --all, then git rebase --update-refs main',
+  },
+  fork: {
+    title: 'Your fork has fallen behind',
+    cwd: '~/tinyjson',
+    setup: (H) => {
+      H.remote('oss', 'tinyjson', [
+        { message: 'Create tinyjson', files: { 'README.md': '# tinyjson\n', 'parse.js': 'export const parse = JSON.parse;\n' } },
+        { message: 'Add stringify', files: { 'stringify.js': 'export const stringify = JSON.stringify;\n' } },
+      ], { stars: 1200, description: 'A tiny JSON helper' });
+      H.world.github.authed = true;
+      H.cd('~');
+      H.run('gh repo fork oss/tinyjson --clone');
+      H.cd('~/tinyjson');
+      H.run('git switch -q -c fix-unicode');
+      H.commit('Handle unicode escapes', { 'parse.js': 'export const parse = s => JSON.parse(s.normalize());\n' });
+      H.teammate('oss/tinyjson', { message: 'Add streaming parser', files: { 'stream.js': 'export const stream = () => {};\n' }, author: { name: 'Mei Chen', email: 'mei@example.org' } });
+      H.teammate('oss/tinyjson', { message: 'Fix README typo', files: { 'README.md': '# tinyjson\n\nTiny JSON helpers.\n' }, author: { name: 'Mei Chen', email: 'mei@example.org' } });
+    },
+    note: 'origin is your fork, upstream is the project, and upstream moved on. Try: git fetch upstream, git rebase upstream/main, then git push -u origin fix-unicode and gh pr create',
+  },
+  leak: {
+    title: 'A secret buried in history',
+    cwd: '~/billing',
+    setup: (H) => {
+      H.repo('~/billing');
+      H.commit('Create billing service', { 'server.js': 'listen(3000);\n', 'README.md': '# billing\n' });
+      // the fake key is assembled at run time so the repository holds no secret-shaped string
+      H.commit('Add local config', { '.env': 'STRIPE_KEY=' + 'sk_' + 'live_' + '51HxQpay7d9F2kTq\n' });
+      H.commit('Add invoices', { 'invoices.js': 'export const list = () => [];\n' });
+      H.commit('Remove .env', {}, { remove: ['.env'] });
+      H.commit('Add refunds', { 'refunds.js': 'export const refund = () => {};\n' });
+    },
+    note: 'A key was committed, then "removed" in a later commit: it is still in history. Try: git log --oneline --all -- .env, then git filter-repo --invert-paths --path .env (and remember to rotate the key).',
+  },
+  monorepo: {
+    title: 'A big monorepo on GitHub',
+    cwd: '~',
+    setup: (H) => {
+      const files = {};
+      for (const app of ['web', 'api', 'admin', 'mobile']) for (let i = 1; i <= 4; i++) files[`apps/${app}/src/file${i}.js`] = `export const ${app}${i} = ${i};\n`;
+      for (const lib of ['ui', 'auth', 'billing']) files[`libs/${lib}/index.js`] = `export const ${lib} = true;\n`;
+      files['docs/index.md'] = '# Monorepo docs\n';
+      files['README.md'] = '# acme monorepo\n';
+      H.remote('acme', 'mono', [{ message: 'Import all projects', files }, { message: 'Bump web', files: { 'apps/web/src/file1.js': 'export const web1 = 2;\n' } }, { message: 'Bump api', files: { 'apps/api/src/file1.js': 'export const api1 = 2;\n' } }], { collaborators: ['you'] });
+    },
+    note: 'acme/mono holds four apps and three libraries. Try: git clone --filter=blob:none --sparse https://github.com/acme/mono.git && cd mono && git sparse-checkout set apps/web libs/ui',
+  },
+  submodules: {
+    title: 'A project with a submodule',
+    cwd: '~/app',
+    setup: (H) => {
+      H.remote('acme', 'hashlib', [{ message: 'hashlib 3.0.0', files: { 'hash.c': 'int hash(const char *s);\n' } }]);
+      H.tagRemote('acme/hashlib', 'v3.0.0');
+      H.teammate('acme/hashlib', { message: 'Constant-time compare', files: { 'compare.c': 'int ct_compare(const char *a, const char *b);\n' } });
+      H.tagRemote('acme/hashlib', 'v3.1.0');
+      H.repo('~/app');
+      H.commit('Create app', { 'main.c': 'int main(void) { return 0; }\n' });
+      H.run('git submodule add -q https://github.com/acme/hashlib.git deps/hashlib');
+      H.run('git -C deps/hashlib switch -q --detach v3.0.0');
+      H.run('git add deps/hashlib && git commit -q -m "Add hashlib 3.0.0 as a submodule"');
+    },
+    note: 'deps/hashlib is pinned to v3.0.0, and v3.1.0 is out. Try: git submodule status, then cd deps/hashlib && git fetch --tags && git switch --detach v3.1.0, then cd ../.. && git add deps/hashlib && git commit',
+  },
 };
 
 export function renderSandbox() {

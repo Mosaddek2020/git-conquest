@@ -22,6 +22,15 @@ When it is approved and checks pass, it can be merged in one of three ways:
 
 After merging, the branch is usually deleted, and everyone **pulls main** to get the result.
 
+```replay
+title: Branch, push, PR, merge
+show: graph
+setup: github you/app; gh auth login; git clone -q https://github.com/you/app.git; cd app
+step: git switch -qc better-readme; commit "Improve README" README.md | Work happens on a branch.
+step: git push -qu origin better-readme && gh pr create --fill | Pushing it and opening a PR asks for review.
+step: gh pr merge 1 --merge && git switch -q main && git pull -q | After approval it merges on GitHub; you pull the result.
+```
+
 ## commands | PRs with the GitHub CLI
 
 ```term

@@ -42,6 +42,15 @@ index 3b18e51..a5c1f2d 100644          ← blob ids before..after
 
 Git shows a modified line as one removal and one addition. Three lines of unchanged context surround each change so you can see where it is.
 
+```replay
+title: diff, diff --staged, and log
+show: areas,graph
+setup: init; commit "Create notes" notes.txt; commit "Add to-do list" notes.txt
+step: echo "Buy milk" >> notes.txt && git diff | git diff: what changed in the working tree and is not staged yet.
+step: git add notes.txt && git diff --staged | git diff --staged: what the next commit will contain.
+step: git commit -qm "Add shopping item" && git log --oneline | git log: the history, newest first.
+```
+
 ## commands | log and show
 
 ```term

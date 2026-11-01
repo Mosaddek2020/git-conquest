@@ -23,6 +23,14 @@ The third leak never happened.
 
 A hook is just a program: shell, Python, Node, anything executable. It must be **executable** (`chmod +x`), and it is **not** committed with the repository (`.git/` is never shared). Teams share hooks through tools like **husky**, **lefthook** or **pre-commit**, or with `git config core.hooksPath .githooks` pointing at a committed folder.
 
+```replay
+title: A hook runs before every commit
+show: graph
+setup: init; commit "Create app" app.js
+step: printf '#!/bin/sh\necho "pre-commit: running checks"\n' > .git/hooks/pre-commit && chmod +x .git/hooks/pre-commit | A hook is an executable script in .git/hooks/ named after the event.
+step: commit "Add search" search.js | git runs it automatically: a non-zero exit would stop the commit.
+```
+
 ## commands | Writing a pre-commit hook
 
 Put this in `.git/hooks/pre-commit`:

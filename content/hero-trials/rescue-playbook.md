@@ -26,6 +26,15 @@ undo-map
 | Remote branch overwritten by someone's force push | yes | anyone's clone that still has the commits can restore it: push from there |
 | Secret committed | maybe | **rotate it**, then remove it (amend if unpushed; otherwise rewrite with `git filter-repo` and coordinate) |
 
+```replay
+title: "I lost my commits": the reflog remembers
+show: graph
+setup: init; commit "Create app" app.js; commit "Add search" search.js; commit "Add filters" filters.js
+step: git reset -q --hard HEAD~2 | A careless reset: two commits seem gone.
+step: git reflog -3 | The reflog lists where HEAD has been, including before the reset.
+step: git reset -q --hard HEAD@{1} | Jump back: both commits are on the branch again.
+```
+
 ## commands | The first-response kit
 
 ```term

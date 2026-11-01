@@ -30,6 +30,15 @@ Every object's id is the **SHA-1 of its type, size and content**. So:
 
 Branches and tags are **refs**: small files mapping names to ids. HEAD is a ref to a ref.
 
+```replay
+title: Commits, trees and blobs
+show: graph
+setup: init; commit "Create readme" README.md
+step: git cat-file -t HEAD | HEAD names a commit object…
+step: git cat-file -p HEAD | …which points to a tree (the snapshot) and records author, committer and message.
+step: git cat-file -p HEAD^{tree} | The tree lists file names and the blob ids holding their contents.
+```
+
 ## commands | Exploring the object database
 
 ```term

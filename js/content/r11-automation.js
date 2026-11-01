@@ -1,6 +1,8 @@
-// Realm 11 · GitHub Automation: Actions, CI checks, secrets, Dependabot, Pages, continuous delivery.
+// Realm 11 · GitHub Automation: Actions, CI checks, secrets, Dependabot, Pages, continuous delivery,
+// matrix builds, reusable workflows and gh api.
 
 import { parseWorkflow } from '../git/github.js';
+import { enableDependabot } from '../git/ghextra.js';
 
 const CI_YML = 'name: CI\non:\n  push:\n    branches: [main]\n  pull_request:\njobs:\n  test:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@v4\n      - uses: actions/setup-node@v4\n      - run: npm ci\n      - run: npm test\n';
 const CI_LINT_YML = CI_YML.replace('      - run: npm test\n', '      - run: npm run lint\n      - run: npm test\n');
@@ -62,13 +64,36 @@ const isProdRoot = url => /^(https?:\/\/)?forecast\.example\/?$/.test(url);
 // did an event matching b happen after the last event matching a?
 const after = (t, a, b) => { const ev = t.world.events; let ia = -1; ev.forEach((e, i) => { if (a(e)) ia = i; }); return ia >= 0 && ev.some((e, i) => i > ia && b(e)); };
 
+// ---------- Dependabot and Actions-at-scale fixtures ----------
+
+const STORE_FILES = {
+  'package.json': '{\n  "name": "storefront",\n  "scripts": { "test": "jest" },\n  "dependencies": {\n    "express": "^4.18.2",\n    "lodash": "^4.17.20"\n  },\n  "devDependencies": {\n    "minimist": "1.2.5"\n  }\n}\n',
+  'server.js': 'import express from "express";\nimport _ from "lodash";\nexpress().get("/", (q, r) => r.send(_.escape("hi"))).listen(3000);\n',
+  'scripts/legacy-build.js': '// Not used since the move to Vite. Kept for reference.\nimport parseArgs from "minimist";\n',
+  '.github/workflows/ci.yml': CI_YML,
+};
+const DEPENDABOT_YML = 'version: 2\nupdates:\n  - package-ecosystem: "npm"\n    directory: "/"\n    schedule:\n      interval: "weekly"\n    open-pull-requests-limit: 5\n';
+
+const CI_MATRIX = (nodes) => `name: CI\non:\n  push:\n    branches: [main]\n  pull_request:\njobs:\n  test:\n    runs-on: ubuntu-latest\n    strategy:\n      matrix:\n        node: [${nodes.join(', ')}]\n    steps:\n      - uses: actions/checkout@v4\n      - uses: actions/setup-node@v4\n        with:\n          node-version: \${{ matrix.node }}\n      - run: npm ci\n      - run: npm test\n`;
+const STAGING_INLINE = 'name: Deploy staging\non:\n  push:\n    branches: [main]\njobs:\n  deploy:\n    runs-on: ubuntu-latest\n    environment: staging\n    steps:\n      - uses: actions/checkout@v4\n      - run: ./scripts/deploy.sh staging\n        env:\n          DEPLOY_TOKEN: ${{ secrets.DEPLOY_TOKEN }}\n';
+const REUSABLE_DEPLOY = 'name: Deploy\non:\n  workflow_call:\n    inputs:\n      environment:\n        required: true\n        type: string\n    secrets:\n      DEPLOY_TOKEN:\n        required: true\njobs:\n  deploy:\n    runs-on: ubuntu-latest\n    environment: ${{ inputs.environment }}\n    steps:\n      - uses: actions/checkout@v4\n      - run: ./scripts/deploy.sh ${{ inputs.environment }}\n        env:\n          DEPLOY_TOKEN: ${{ secrets.DEPLOY_TOKEN }}\n';
+const STAGING_CALLER = 'name: Deploy staging\non:\n  push:\n    branches: [main]\njobs:\n  deploy:\n    uses: ./.github/workflows/deploy.yml\n    with:\n      environment: staging\n    secrets: inherit\n';
+const WEATHER_FILES = {
+  'package.json': '{\n  "name": "weather",\n  "engines": { "node": ">=18" },\n  "scripts": { "test": "node --test" }\n}\n',
+  'src/forecast.js': 'export const lastRainyDay = days => days.findLast(d => d.rain > 0);\n',
+  'scripts/deploy.sh': '#!/bin/sh\n# Usage: ./scripts/deploy.sh <environment>   (needs DEPLOY_TOKEN)\nset -e\nhostctl upload --env "$1" --token "$DEPLOY_TOKEN" .\n',
+  '.github/workflows/ci.yml': CI_YML,
+  '.github/workflows/deploy-staging.yml': STAGING_INLINE,
+};
+const ciRun = t => t.remote('you/weather')?.meta.runs.find(r => r.file === 'ci.yml') || null;
+
 export default {
   id: 'automation',
   n: 11,
   title: 'GitHub Automation',
-  tagline: 'Actions, required checks, secrets, deploy pipelines and rollbacks',
+  tagline: 'Actions, required checks, secrets, Dependabot, deploy pipelines, matrices and the API',
   badge: 'Automaton Wrangler',
-  intro: 'Let GitHub do the boring, critical work for you. Write **GitHub Actions** workflows, gate merges on **required checks**, keep credentials in **secrets** (and know what to do when one leaks), turn on **Dependabot**, then build a **continuous delivery** pipeline with staging, approved production releases and one-command **rollbacks**.',
+  intro: 'Let GitHub do the boring, critical work for you. Write **GitHub Actions** workflows, gate merges on **required checks**, keep credentials in **secrets** (and know what to do when one leaks), turn on **Dependabot**, then build a **continuous delivery** pipeline with staging, approved production releases and one-command **rollbacks**. Finally, work a **Dependabot** queue properly and scale Actions with **matrix builds**, **reusable workflows** and `gh api`.',
   lessons: [
     {
       id: 'actions-basics',
@@ -278,6 +303,78 @@ export default {
         { type: 'multi', q: 'Which strategies reduce the impact of a bad release?', choices: ['Canary releases to a small share of users', 'Feature flags', 'Blue-green deployments', 'Bigger, rarer releases'], answer: [0, 1, 2], explain: 'Bigger releases make failures more likely and harder to diagnose.' },
         { type: 'type', q: 'Type the gh command that runs release.yml on the tag v1.1.0.', accept: ['gh workflow run release.yml --ref v1.1.0', 'gh workflow run release.yml -r v1.1.0'], model: 'gh workflow run release.yml --ref v1.1.0', explain: 'The workflow needs a workflow_dispatch trigger.' },
         { type: 'mc', q: 'Why can a rollback fail after a release that changed the database schema?', choices: ['Git cannot check out old tags', 'The old code may not work with the new schema', 'Rollbacks delete the database', 'Approvals expire'], answer: 1, explain: 'Make migrations backward compatible so both versions work.' },
+      ],
+    },
+    {
+      id: 'dependabot',
+      title: 'Dependabot: patch before you are breached',
+      summary: 'Read Dependabot alerts, merge security updates, dismiss with a reason, and schedule version updates.',
+      minutes: 18,
+      lab: {
+        cwd: '~/storefront',
+        panels: ['github', 'files'],
+        setup(H) {
+          const bare = H.remote('you', 'storefront', [{ message: 'Create storefront', files: STORE_FILES }]);
+          H.world.github.authed = true;
+          enableDependabot(H.world, bare);
+          H.cd('~');
+          H.run('git clone -q https://github.com/you/storefront.git');
+          H.cd('~/storefront');
+        },
+        suggestions: ["gh api repos/{owner}/{repo}/dependabot/alerts --jq '.[] | {number, package: .dependency.package.name, severity: .security_advisory.severity}'", 'gh pr list'],
+        tasks: [
+          { title: 'List the open Dependabot alerts with the GitHub API', hint: "`gh api repos/{owner}/{repo}/dependabot/alerts --jq '.[] | {number, package: .dependency.package.name, severity: .security_advisory.severity}'`", solution: "gh api repos/{owner}/{repo}/dependabot/alerts --jq '.[] | {number, package: .dependency.package.name, severity: .security_advisory.severity}'", check: t => t.events('gh-api').some(e => /dependabot\/alerts$/.test(e.endpoint)) },
+          { title: "Check that Dependabot's lodash PR passes CI", solution: 'gh pr checks 1', check: t => t.ran(/gh pr (checks|view) 1\b/) },
+          { title: 'Merge it, deleting its branch', solution: 'gh pr merge 1 --squash --delete-branch', check: t => t.remote('you/storefront').meta.dependabot.alerts.find(a => a.pkg === 'lodash')?.state === 'fixed' },
+          { title: 'minimist is only used by scripts/legacy-build.js, which nothing runs. Dismiss its alert as not used', hint: '`gh api -X PATCH repos/{owner}/{repo}/dependabot/alerts/2 -f state=dismissed -f dismissed_reason=not_used -f dismissed_comment="…"`', solution: 'gh api -X PATCH repos/{owner}/{repo}/dependabot/alerts/2 -f state=dismissed -f dismissed_reason=not_used -f dismissed_comment="Only scripts/legacy-build.js uses it; never shipped"', check: t => { const a = t.remote('you/storefront').meta.dependabot.alerts.find(x => x.pkg === 'minimist'); return a?.state === 'dismissed' && a.dismissedReason === 'not_used'; } },
+          { title: 'Ask Dependabot for weekly npm version updates too: pull, add .github/dependabot.yml, commit and push', hint: 'Pull first: main moved when you merged. The file needs version: 2 and one npm entry under updates (see the Commands lens).', solution: 'git pull, then edit .github/dependabot.yml, git add .github && git commit -m "chore: weekly Dependabot version updates" && git push', test: ['git pull -q', { cmd: 'edit .github/dependabot.yml', edit: DEPENDABOT_YML }, 'git add .github && git commit -qm "chore: weekly Dependabot version updates" && git push -q'], check: t => t.remote('you/storefront').meta.prs.some(p => p.dependabot?.pkg === 'express' && !p.dependabot.security) },
+          { title: 'Review the express update and merge it once CI is green', solution: 'gh pr checks 3 && gh pr merge 3 --squash --delete-branch', test: ['gh pr checks 3', 'gh pr merge 3 --squash --delete-branch'], check: t => t.remote('you/storefront').meta.prs.some(p => p.dependabot?.pkg === 'express' && p.state === 'merged') },
+        ],
+      },
+      quiz: [
+        { type: 'mc', q: 'What is the difference between a Dependabot security update and a version update?', choices: ['Security updates fix a known vulnerability from an alert; version updates keep dependencies current on a schedule set in dependabot.yml', 'They are the same', 'Version updates only change devDependencies', 'Security updates need a dependabot.yml file'], answer: 0, explain: 'Alerts and security updates are switched on in the repository settings; version updates need .github/dependabot.yml.' },
+        { type: 'mc', q: 'When is dismissing an alert the right call?', choices: ['When the vulnerable code is really not reachable or not used, with a reason and a comment recorded', 'When the PR is noisy', 'Whenever CI is red', 'Never: alerts cannot be dismissed'], answer: 0, explain: 'Reasons: fix_started, inaccurate, no_bandwidth, not_used, tolerable_risk. Revisit dismissed alerts regularly.' },
+        { type: 'tf', q: 'A Dependabot PR should be merged without CI because the bot made it.', answer: false, explain: 'Upgrades break things. Treat them like any other PR: green checks, a look at the changelog.' },
+        { type: 'type', q: 'Type the gh command that lists the repository\'s Dependabot alerts as JSON.', accept: ['gh api repos/{owner}/{repo}/dependabot/alerts', 'gh api /repos/{owner}/{repo}/dependabot/alerts'], model: 'gh api repos/{owner}/{repo}/dependabot/alerts', explain: 'gh fills in {owner} and {repo} from the current repository; add --jq to pick fields.' },
+        { type: 'mc', q: 'What does `open-pull-requests-limit` in dependabot.yml do?', choices: ['Caps how many version-update PRs Dependabot keeps open at once', 'Limits PRs from humans', 'Sets how many reviewers are needed', 'Disables security updates'], answer: 0, explain: 'Keeps the queue manageable; grouping related updates helps too.' },
+      ],
+    },
+    {
+      id: 'actions-scale',
+      title: 'Actions at scale: matrix, reusable workflows, the API',
+      summary: 'Test on several versions at once, share one deploy workflow, and query runs with gh api.',
+      minutes: 20,
+      lab: {
+        cwd: '~/weather',
+        panels: ['github', 'files'],
+        setup(H) {
+          H.world.testRule = (files, ctx) => (ctx?.matrix && String(ctx.matrix.node) === '18' && /findLast/.test(files['src/forecast.js'] || '')
+            ? { ok: false, log: ['FAIL test/forecast.test.js', '  ✕ TypeError: days.findLast is not a function (Node 18 has no Array.prototype.findLast)'] }
+            : { ok: true, log: [`PASS test/forecast.test.js${ctx?.matrix ? ` (node ${ctx.matrix.node})` : ''}`] });
+          H.remote('you', 'weather', [{ message: 'Create weather app', files: WEATHER_FILES }]);
+          H.world.github.authed = true;
+          H.secret('you/weather', 'DEPLOY_TOKEN', 'hosting-token');
+          H.environment('you/weather', 'staging', { url: 'https://staging.weather.example' });
+          H.cd('~');
+          H.run('git clone -q https://github.com/you/weather.git');
+          H.cd('~/weather');
+        },
+        suggestions: ['cat .github/workflows/ci.yml', 'edit .github/workflows/ci.yml'],
+        tasks: [
+          { title: 'Make CI test on Node 18, 20 and 22 with a matrix, and push', hint: 'Add `strategy: matrix: node: [18, 20, 22]` to the test job, and pass `${{ matrix.node }}` to actions/setup-node.', solution: 'edit .github/workflows/ci.yml, then git commit -am "ci: test on Node 18, 20 and 22" && git push', test: [{ cmd: 'edit .github/workflows/ci.yml', edit: CI_MATRIX(['18', '20', '22']) }, 'git commit -qam "ci: test on Node 18, 20 and 22" && git push -q'], check: t => { const r = ciRun(t); return !!r && r.jobs.filter(j => j.def?.matrix).length === 3; } },
+          { title: 'Find out which cell failed, and why', solution: 'gh run view', check: t => t.ran(/gh run view/) && ciRun(t)?.conclusion === 'failure' },
+          { title: 'Node 18 is end-of-life. Drop it from the matrix and push: CI goes green', solution: 'edit .github/workflows/ci.yml, then git commit -am "ci: drop end-of-life Node 18" && git push', test: [{ cmd: 'edit .github/workflows/ci.yml', edit: CI_MATRIX(['20', '22']) }, 'git commit -qam "ci: drop end-of-life Node 18" && git push -q'], check: t => { const r = ciRun(t); return !!r && r.conclusion === 'success' && r.jobs.filter(j => j.def?.matrix).length === 2; } },
+          { title: 'Write a reusable deploy workflow: .github/workflows/deploy.yml, triggered by workflow_call with an `environment` input and a DEPLOY_TOKEN secret', hint: 'See the Commands lens. It runs `./scripts/deploy.sh ${{ inputs.environment }}` with DEPLOY_TOKEN in its env.', solution: 'edit .github/workflows/deploy.yml', test: [{ cmd: 'edit .github/workflows/deploy.yml', edit: REUSABLE_DEPLOY }], check: t => { const txt = t.file('~/weather/.github/workflows/deploy.yml'); if (!txt) return false; const wf = parseWorkflow(txt); return !wf.errors.length && 'workflow_call' in wf.triggers && !!wf.triggers.workflow_call?.inputs?.environment; } },
+          { title: 'Make deploy-staging.yml call it instead of repeating the steps, then commit both files and push', hint: 'The deploy job becomes `uses: ./.github/workflows/deploy.yml`, `with: environment: staging` and `secrets: inherit` (no runs-on, no steps).', solution: 'edit .github/workflows/deploy-staging.yml, git add .github && git commit -m "ci: share one deploy workflow" && git push', test: [{ cmd: 'edit .github/workflows/deploy-staging.yml', edit: STAGING_CALLER }, 'git add .github && git commit -qm "ci: share one deploy workflow" && git push -q'], check: t => { const d = t.deployment('you/weather', 'staging'); const b = t.remote('you/weather'); const wf = parseWorkflow(t.file('~/weather/.github/workflows/deploy-staging.yml') || ''); return !!d && d.hash === b.refs['refs/heads/main'] && wf.jobs.some(j => j.uses === './.github/workflows/deploy.yml'); } },
+          { title: "Ask the API for the latest runs' names and conclusions", hint: "`gh api repos/{owner}/{repo}/actions/runs --jq '.workflow_runs[] | {name, conclusion}'`", solution: "gh api repos/{owner}/{repo}/actions/runs --jq '.workflow_runs[] | {name, conclusion}'", check: t => t.events('gh-api').some(e => /actions\/runs$/.test(e.endpoint)) },
+        ],
+      },
+      quiz: [
+        { type: 'mc', q: 'A job has `strategy: matrix: node: [20, 22]` and `os: [ubuntu-latest, windows-latest]`. How many jobs run?', choices: ['4', '2', '1', '6'], answer: 0, explain: 'Every combination: 2 × 2. Use include/exclude to add or remove specific combinations.' },
+        { type: 'mc', q: 'What does fail-fast (on by default) do in a matrix?', choices: ['Cancels the remaining matrix jobs as soon as one fails', 'Retries failed jobs', 'Skips the matrix on pull requests', 'Fails the run if it takes too long'], answer: 0, explain: 'Set fail-fast: false to see every combination\'s result.' },
+        { type: 'mc', q: 'What makes a workflow reusable by other workflows?', choices: ['An `on: workflow_call` trigger (with its inputs and secrets)', 'Putting it in a folder called shared/', 'A name starting with reusable-', 'Running it with workflow_dispatch'], answer: 0, explain: 'Callers use it as a job: `uses: ./.github/workflows/deploy.yml` or `owner/repo/.github/workflows/deploy.yml@v1`.' },
+        { type: 'tf', q: 'A called workflow automatically sees all of the caller\'s secrets.', answer: false, explain: 'Pass them explicitly under `secrets:` or with `secrets: inherit`.' },
+        { type: 'type', q: 'Type the gh api call (with --jq) that prints the conclusion of the most recent workflow run.', accept: ["gh api repos/{owner}/{repo}/actions/runs --jq '.workflow_runs[0].conclusion'", 'gh api repos/{owner}/{repo}/actions/runs --jq .workflow_runs[0].conclusion', 'gh api repos/{owner}/{repo}/actions/runs --jq ".workflow_runs[0].conclusion"'], model: "gh api repos/{owner}/{repo}/actions/runs --jq '.workflow_runs[0].conclusion'", explain: '--jq filters the JSON response, so scripts get exactly the value they need.' },
       ],
     },
     {

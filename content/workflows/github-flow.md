@@ -22,6 +22,15 @@ github-flow
 
 No `develop` branch, no release branches, no long-lived anything. The workflow you practised in the GitHub realm *is* GitHub flow.
 
+```replay
+title: GitHub flow in four commands
+show: graph
+setup: github acme/app; gh auth login; git clone -q https://github.com/acme/app.git; cd app
+step: git switch -qc add-search; commit "Add search" search.js | 1. Branch from main and commit.
+step: git push -qu origin add-search && gh pr create --fill | 2. Push and open a pull request: discussion and CI happen here.
+step: gh pr merge 1 --squash --delete-branch && git switch -q main && git pull -q | 3. Merge once approved and green. 4. Deploy main; delete the branch.
+```
+
 ## commands | The loop in commands
 
 ```term

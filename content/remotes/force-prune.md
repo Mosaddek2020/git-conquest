@@ -21,6 +21,15 @@ $ git push --force-with-lease
 
 You need a force push after **rewriting** a branch you had already pushed (rebase, amend, interactive rebase), typically your own feature branch during review. Never on shared branches like `main`.
 
+```replay
+title: Rewrite safely, then clean up
+show: graph
+setup: github you/app; gh auth login; git clone -q https://github.com/you/app.git; cd app; git switch -c feature; commit "WIP" feature.js; git push -qu origin feature
+step: git commit --amend -qm "Add feature" | Amending changes a commit that is already on GitHub…
+step: git push --force-with-lease | …so the push must force. The lease refuses if someone else pushed to feature meanwhile.
+step: git push -q origin --delete feature && git switch -q main && git fetch --prune | After merging, delete the remote branch; --prune removes stale remote-tracking branches.
+```
+
 ## commands | Force, delete, prune
 
 ```term

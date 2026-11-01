@@ -1,7 +1,8 @@
-// Realm 15 · Hero Trials: disaster recovery, three outcome-based trials and the final boss.
+// Realm 16 · Hero Trials: disaster recovery, five outcome-based trials and the final boss.
 
 import { todoPlan } from './r05-rewriting.js';
-import { revList } from '../git/core.js';
+import { revList, configGet, mailmapFor } from '../git/core.js';
+import { reachableObjects, isArchive, parseArchive } from '../git/everyday.js';
 
 const CI_YML = 'name: CI\non:\n  push:\n    branches: [main]\n  pull_request:\njobs:\n  test:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@v4\n      - run: npm ci\n      - run: npm test\n';
 const PRIYA = { name: 'Priya Sharma', email: 'priya@example.com' };
@@ -21,13 +22,25 @@ function bareCommit(world, bare, { parents, files, remove = [], message, author 
   return world.writeCommit({ tree: world.writeTree(flat), parents, message, author: sig, committer: sig });
 }
 
+// ---------- stack and clean-house trial fixtures ----------
+
+const STACK = ['entries', 'balances', 'statements'];
+const ENTRY = 'export class Entry {\n  constructor(label, cents) {\n    this.label = label;\n    this.cents = cents;\n  }\n}\n';
+const ENTRY_VALID = 'export class Entry {\n  constructor(label, cents) {\n    validate(cents);\n    this.label = label;\n    this.cents = cents;\n  }\n}\n\nfunction validate(cents) {\n  if (!Number.isInteger(cents)) throw new TypeError("cents must be an integer");\n}\n';
+const stackOn = (t, base) => { const [e, b, s] = STACK.map(x => t.ref(x)); if (!e || !b || !s) return false; const p = h => t.world.commit(h).parents[0]; return p(s) === b && p(b) === e && p(e) === t.ref(base); };
+const CSS_V1 = 'h1 { color: #333; }\nh2 { color: #555; }\nbody { margin: 0; }\n';
+const CSS_V2 = 'h1 { color: #111; }\nh2 { color: #333; }\nbody { margin: 0; }\n';
+const CSS_FMT = 'h1 {\n  color: #111;\n}\nh2 {\n  color: #333;\n}\nbody {\n  margin: 0;\n}\n';
+// assembled at run time so the repository holds no secret-shaped strings
+const ENV_LEAK = 'SMTP_PASSWORD=' + ['hb', 'live', '7Qm2Zr9'].join('_') + '\n';
+
 export default {
   id: 'hero-trials',
-  n: 15,
+  n: 16,
   title: 'Hero Trials',
   tagline: 'Rescue any situation, then prove everything in the final trial',
   badge: 'Git Hero',
-  intro: 'The last realm. First, a **rescue playbook** that turns "I broke git" into a calm, five-minute fix. Then three **trials** that state the outcome and leave the commands to you: run a release as the **maintainer**, land a contribution as an **outside contributor**, and perform **history surgery** on a leaked key without losing a teammate\'s work. Finally, **The Conquest**: one long, realistic day that uses everything you learned.',
+  intro: 'The last realm. First, a **rescue playbook** that turns "I broke git" into a calm, five-minute fix. Then five **trials** that state the outcome and leave the commands to you: run a release as the **maintainer**, land a contribution as an **outside contributor**, perform **history surgery** on a leaked key without losing a teammate\'s work, **ship a stack** of three PRs through review, and **clean house** (identities, blame, a leak, a release archive). Finally, **The Conquest**: one long, realistic day that uses everything you learned.',
   lessons: [
     {
       id: 'rescue-playbook',
@@ -240,6 +253,109 @@ export default {
         { type: 'tf', q: 'The v1.0.0 tag is safe because it was created before the key was "removed" from main.', answer: false, explain: 'The tag points at a commit that contains the key. Rewrite and force-push tags too.' },
         { type: 'order', q: 'Order the surgery.', items: ['Revoke the key', 'Fresh clone with a local branch for every remote branch', 'git filter-repo --replace-text', 'Force-push all branches and tags', 'Turn on push protection', 'Ask everyone to re-clone'], explain: 'Bleeding first, then the operation, then aftercare.' },
         { type: 'mc', q: 'A teammate pulls into their old clone after the rewrite. What happens?', choices: ['The old history, key included, is merged back', 'Their clone is cleaned', 'git refuses', 'Nothing'], answer: 0, explain: 'Re-clone, or move unpushed work with rebase --onto.' },
+      ],
+    },
+    {
+      id: 'stack-shipper',
+      title: 'Trial: ship the stack',
+      summary: 'Land three stacked PRs through review and a protected main, keeping the stack intact at every step.',
+      minutes: 30,
+      boss: true,
+      lab: {
+        cwd: '~/ledger',
+        panels: ['graph', 'github'],
+        setup(H) {
+          H.remote('acme', 'ledger', [{ message: 'Create ledger', files: { 'src/index.js': 'export {};\n', 'README.md': '# ledger\n' } }], { collaborators: ['you'] });
+          H.protect('acme/ledger', 'main', { requirePR: true, requiredReviews: 1 });
+          H.world.github.authed = true;
+          H.cd('~');
+          H.run('git clone -q https://github.com/acme/ledger.git');
+          H.cd('~/ledger');
+          H.run('git switch -qc entries');
+          H.commit('Add ledger entries', { 'src/entry.js': ENTRY });
+          H.run('git switch -qc balances');
+          H.commit('Compute balances', { 'src/balance.js': 'import { Entry } from "./entry.js";\nexport const balance = entries => entries.reduce((s, e) => s + e.cents, 0);\n' });
+          H.run('git switch -qc statements');
+          H.commit('Monthly statements', { 'src/statement.js': 'import { balance } from "./balance.js";\nexport const statement = (month, entries) => ({ month, total: balance(entries) });\n' });
+          H.teammate('acme/ledger', { message: 'Add currency helper', files: { 'src/currency.js': 'export const eur = c => (c / 100).toFixed(2) + " €";\n' }, author: PRIYA });
+        },
+        events(ev, t) {
+          const url = 'https://github.com/acme/ledger.git';
+          if (ev.url !== url) return;
+          const b = t.remote('acme/ledger');
+          if (ev.type === 'pr-created') {
+            const pr = b.meta.prs.find(p => p.number === ev.number);
+            if (pr.head === 'entries') { t.review('acme/ledger', pr.number, 'CHANGES_REQUESTED', 'Entries must reject non-integer cents: add a validate() check in the constructor.', 'Priya Sharma'); t.say(`[GitHub] Priya requested changes on #${pr.number}: "add a validate() check".`); }
+            else { t.review('acme/ledger', pr.number, 'APPROVED', 'Looks good.', 'Priya Sharma'); t.say(`[GitHub] Priya approved #${pr.number}.`); }
+          }
+          if (ev.type === 'push' && ev.branch === 'entries') {
+            const pr = b.meta.prs.find(p => p.head === 'entries' && p.state === 'open');
+            const flat = t.world.readTreeFlat(t.world.commit(b.refs['refs/heads/entries']).tree);
+            const txt = flat.has('src/entry.js') ? t.world.objects.get(flat.get('src/entry.js')).content : '';
+            if (pr && /validate/.test(txt) && !pr.reviews.some(r => r.state === 'APPROVED')) { t.review('acme/ledger', pr.number, 'APPROVED', 'Validation looks right. Approved.', 'Priya Sharma'); t.say(`[GitHub] Priya approved #${pr.number}.`); }
+          }
+        },
+        suggestions: ['git log --oneline --graph --all', 'gh pr list'],
+        tasks: [
+          { title: 'The stack (entries → balances → statements) sits on the latest main', solution: 'git config --global rebase.updateRefs true && git fetch && git rebase origin/main', check: t => t.ref('origin/main') === t.remoteRef('acme/ledger', 'main') && stackOn(t, 'origin/main') },
+          { title: 'All three branches are on GitHub, each with a PR based on the branch below it', solution: 'git push -u origin entries balances statements, then gh pr create --base main --head entries …, --base entries --head balances …, --base balances --head statements …', test: ['git push -q origin entries balances statements', 'gh pr create --base main --head entries --title "Ledger entries" --body "Part 1 of 3"', 'gh pr create --base entries --head balances --title "Balances" --body "Part 2 of 3"', 'gh pr create --base balances --head statements --title "Statements" --body "Part 3 of 3"'], check: t => { const prs = t.remote('acme/ledger').meta.prs; return [['entries', 'main'], ['balances', 'entries'], ['statements', 'balances']].every(([h, b]) => prs.some(p => p.head === h && p.base === b && p.state === 'open')) && STACK.every(b => t.remoteRef('acme/ledger', b) === t.ref(b)); } },
+          { title: "Priya's review is addressed in the bottom commit itself, the stack is intact and pushed", detail: 'entries must contain a `validate` check in src/entry.js; no fixup commits may remain.', solution: 'edit src/entry.js on statements, git commit -a --fixup entries, git rebase -i --autosquash origin/main, git push --force-with-lease origin entries balances statements', test: [{ cmd: 'edit src/entry.js', edit: ENTRY_VALID }, 'git commit -qa --fixup entries', { cmd: 'git rebase -i --autosquash origin/main', edit: c => c }, 'git push -q --force-with-lease origin entries balances statements'], check: t => /validate/.test(t.fileAt('entries', 'src/entry.js') || '') && stackOn(t, 'origin/main') && !revList(t.world, [t.ref('statements')], [t.ref('origin/main')]).some(h => /^fixup!/.test(t.world.commit(h).message)) && STACK.every(b => t.remoteRef('acme/ledger', b) === t.ref(b)) },
+          { title: 'PR 1 is squash-merged into main and PR 2 now targets main', solution: 'gh pr merge 1 --squash --delete-branch', check: t => { const prs = t.remote('acme/ledger').meta.prs; return prs.find(p => p.head === 'entries')?.state === 'merged' && prs.find(p => p.head === 'balances')?.base === 'main'; } },
+          { title: 'The rest of the stack sits on the new main without the old entries commit, and PR 2 is merged', solution: 'git fetch && git rebase --onto origin/main entries statements && git push --force-with-lease origin balances statements && gh pr merge 2 --squash --delete-branch', test: ['git fetch -q', 'git rebase --onto origin/main entries statements', 'git push -q --force-with-lease origin balances statements', 'gh pr merge 2 --squash --delete-branch'], check: t => { const prs = t.remote('acme/ledger').meta.prs; return prs.find(p => p.head === 'balances')?.state === 'merged' && prs.find(p => p.head === 'statements')?.base === 'main'; } },
+          { title: 'All three features are on main, and your local main matches it', solution: 'git fetch && git rebase --onto origin/main balances statements && git push --force-with-lease origin statements && gh pr merge 3 --squash --delete-branch && git switch main && git pull', test: ['git fetch -q', 'git rebase --onto origin/main balances statements', 'git push -q --force-with-lease origin statements', 'gh pr merge 3 --squash --delete-branch', 'git switch -q main && git pull -q'], check: t => { const b = t.remote('acme/ledger'); const m = b.refs['refs/heads/main']; const flat = t.world.readTreeFlat(t.world.commit(m).tree); return ['src/entry.js', 'src/balance.js', 'src/statement.js', 'src/currency.js'].every(f => flat.has(f)) && /validate/.test(t.world.objects.get(flat.get('src/entry.js')).content) && t.ref('main') === m && t.branch() === 'main'; } },
+        ],
+      },
+      quiz: [
+        { type: 'mc', q: 'In a stack, which PR should be merged first?', choices: ['The bottom one, based on main', 'The top one', 'Any order', 'All at once with an octopus merge'], answer: 0, explain: 'Merging a higher PR first would bring the unreviewed lower commits along.' },
+        { type: 'mc', q: 'The bottom PR was squash-merged. Which command moves the rest of the stack?', choices: ['git rebase --onto origin/main <old-bottom> <top>', 'git rebase origin/main', 'git merge origin/main', 'git cherry-pick origin/main'], answer: 0, explain: 'Only the commits above the old bottom are replayed; --update-refs moves the branches in between.' },
+        { type: 'tf', q: 'With rebase.updateRefs on, a fixup for the bottom commit can be folded in from the top branch with one interactive rebase.', answer: true, explain: '--autosquash puts it in place; update-ref lines move every branch.' },
+        { type: 'mc', q: 'Why --force-with-lease when pushing a rebased stack?', choices: ['It refuses if someone pushed to those branches since you last fetched', 'It is faster', 'It skips CI', 'It deletes merged branches'], answer: 0, explain: 'Reviewers sometimes push suggestions to your branches.' },
+        { type: 'mc', q: 'What lets GitHub retarget PR 2 to main automatically?', choices: ['Deleting the merged PR 1 branch (or automatic head-branch deletion)', 'A CODEOWNERS file', 'Branch protection', 'Squash merging alone'], answer: 0, explain: 'When the base branch disappears after its PR merged, dependent PRs move to the merged PR\'s base.' },
+      ],
+    },
+    {
+      id: 'house-keeper',
+      title: 'Trial: clean house',
+      summary: 'Fix identities, make blame and shortlog tell the truth, really delete a leak, and ship a clean release archive.',
+      minutes: 30,
+      boss: true,
+      lab: {
+        cwd: '~/work/handbook',
+        panels: ['graph', 'files'],
+        setup(H) {
+          H.remote('acme', 'handbook', [
+            { message: 'Create handbook', files: { 'docs/index.md': '# Handbook\n', 'docs/style.css': CSS_V1, 'drafts/ideas.md': 'unfinished\n' }, author: PRIYA },
+            { message: 'Onboarding guide', files: { 'docs/onboarding.md': '# Onboarding\n' }, author: { name: 'priya', email: 'priya.sharma@old-laptop.local' } },
+            { message: 'Darker headings', files: { 'docs/style.css': CSS_V2 }, author: { name: 'Kim Park', email: 'kim@example.org' } },
+            { message: 'Reformat CSS', files: { 'docs/style.css': CSS_FMT }, author: { name: 'Format Bot', email: 'bot@example.org' } },
+          ], { collaborators: ['you'] });
+          H.tagRemote('acme/handbook', 'v2.9');
+          H.world.github.authed = true;
+          H.run('mkdir -p ~/work');
+          H.cd('~/work');
+          H.run('git clone -q https://github.com/acme/handbook.git');
+          H.cd('~/work/handbook');
+          H.commit('Holiday policy', { 'docs/holidays.md': '# Holidays\n\n25 days a year.\n' });
+          H.commit('Add local settings', { '.env': ENV_LEAK });
+          H.commit('Expenses policy', { 'docs/expenses.md': '# Expenses\n' });
+          H.world.labData = { leak: H.world.blobHash(ENV_LEAK), fmt: H.shell.run('git rev-parse origin/main', { record: false }).out[0] };
+        },
+        suggestions: ['git log --oneline --format="%h %an <%ae> %s" origin/main..', 'git config --show-origin user.email'],
+        tasks: [
+          { title: 'Every repository under ~/work/ commits as dev@acme.example, automatically', solution: 'git config --file ~/.gitconfig-work user.email dev@acme.example && git config --global includeIf.gitdir:~/work/.path ~/.gitconfig-work', check: t => configGet(t.repo, 'user.email') === 'dev@acme.example' && Object.keys(t.world.globalConfig).some(k => /^includeif\.gitdir:/i.test(k)) },
+          { title: 'Your unpushed work is on GitHub: authored as dev@acme.example, with no trace of .env in any pushed commit', hint: 'Drop the .env commit in an interactive rebase and re-author the rest with --exec.', solution: 'git rebase -i origin/main (drop "Add local settings"), then git rebase origin/main --exec "git commit --amend --no-edit --reset-author" && git push', test: [{ cmd: 'git rebase -i origin/main', edit: c => c.replace(/^pick (\w+) Add local settings$/m, 'drop $1 Add local settings') }, 'git rebase origin/main --exec "git commit --amend --no-edit --reset-author"', 'git push -q'], check: t => { const b = t.remote('acme/handbook'); const mine = revList(t.world, [b.refs['refs/heads/main']], [t.world.labData.fmt]); return mine.length === 2 && mine.every(h => t.world.commit(h).author.email === 'dev@acme.example') && !blobsOf(t.world, [b.refs['refs/heads/main']]).some(c => c === ENV_LEAK); } },
+          { title: 'The leaked .env content no longer exists anywhere in your local repository', hint: 'The reflog still reaches it. Expire it, then prune.', solution: 'git reflog expire --expire=now --all && git gc --prune=now', check: t => !reachableObjects(t.repo).has(t.world.labData.leak) && !(t.repo.dangling || new Set()).has(t.world.labData.leak) },
+          { title: '`git shortlog -sne` lists Priya once, and the fix is on GitHub', solution: 'echo "Priya Sharma <priya@example.com> <priya.sharma@old-laptop.local>" > .mailmap && git add .mailmap && git commit -m "Add .mailmap" && git push', test: ['echo "Priya Sharma <priya@example.com> <priya.sharma@old-laptop.local>" > .mailmap', 'git add .mailmap && git commit -qm "Add .mailmap"', 'git push -q'], check: t => { const b = t.remote('acme/handbook'); const flat = t.world.readTreeFlat(t.world.commit(b.refs['refs/heads/main']).tree); return flat.has('.mailmap') && mailmapFor(t.repo)({ name: 'priya', email: 'priya.sharma@old-laptop.local' }).email === 'priya@example.com'; } },
+          { title: 'For everyone, blame of docs/style.css looks past "Reformat CSS"', hint: 'A committed .git-blame-ignore-revs, pushed, plus blame.ignoreRevsFile in your clone.', solution: 'git rev-parse <reformat> > .git-blame-ignore-revs && git add .git-blame-ignore-revs && git commit -m "Ignore the CSS reformat in blame" && git push && git config blame.ignoreRevsFile .git-blame-ignore-revs', test: [t => `git rev-parse ${t.world.labData.fmt} > .git-blame-ignore-revs`, 'git add .git-blame-ignore-revs && git commit -qm "Ignore the CSS reformat in blame"', 'git push -q', 'git config blame.ignoreRevsFile .git-blame-ignore-revs'], check: t => { const b = t.remote('acme/handbook'); const flat = t.world.readTreeFlat(t.world.commit(b.refs['refs/heads/main']).tree); const f = flat.has('.git-blame-ignore-revs') ? t.world.objects.get(flat.get('.git-blame-ignore-revs')).content : ''; return f.includes(t.world.labData.fmt) && t.config('blame.ignoreRevsFile') === '.git-blame-ignore-revs'; } },
+          { title: '~/handbook-3.0.tar.gz holds tag v3.0 inside handbook-3.0/, without the drafts folder', solution: 'printf "/drafts export-ignore\\n" >> .gitattributes && git add .gitattributes && git commit -m "Keep drafts out of releases" && git push && git tag -a v3.0 -m "Handbook 3.0" && git push origin v3.0 && git archive --prefix=handbook-3.0/ -o ~/handbook-3.0.tar.gz v3.0', test: ['printf "/drafts export-ignore\\n" >> .gitattributes', 'git add .gitattributes && git commit -qm "Keep drafts out of releases"', 'git push -q', 'git tag -a v3.0 -m "Handbook 3.0" && git push -q origin v3.0', 'git archive --prefix=handbook-3.0/ -o ~/handbook-3.0.tar.gz v3.0'], check: t => { const c = t.world.files.get(t.world.home + '/handbook-3.0.tar.gz'); if (!isArchive(c)) return false; const a = parseArchive(c); return a.format === 'tar.gz' && a.entries.length > 0 && a.entries.every(e => e.path.startsWith('handbook-3.0/')) && !a.entries.some(e => /\/drafts\//.test(e.path)) && a.entries.some(e => /holidays\.md$/.test(e.path)); } },
+        ],
+      },
+      quiz: [
+        { type: 'mc', q: 'Your last three commits are unpushed and one added a .env file. What is the cleanest fix?', choices: ['Drop that commit in git rebase -i, then push', 'Commit a deletion of .env and push', 'Add .env to .gitignore and push', 'git revert it and push'], answer: 0, explain: 'A later deletion still publishes the secret in history. Unpushed history can simply be rewritten.' },
+        { type: 'mc', q: 'After dropping the commit, why does git still have the .env blob?', choices: ['The reflog keeps the old commits reachable', 'Git never deletes anything', 'Because it is in .gitignore', 'Because of the index'], answer: 0, explain: 'expire the reflog and gc --prune=now to remove it.' },
+        { type: 'tf', q: 'If the .env had been pushed, cleaning your local repository would make the secret safe.', answer: false, explain: 'Rotate it. Then rewrite the shared history and ask the host to purge caches.' },
+        { type: 'mc', q: 'Which file makes GitHub\'s blame view skip a formatting commit?', choices: ['.git-blame-ignore-revs at the repository root', '.mailmap', '.gitattributes', 'CODEOWNERS'], answer: 0, explain: 'Locally you also set blame.ignoreRevsFile.' },
+        { type: 'type', q: 'Type the .gitattributes line that keeps the `drafts/` folder out of `git archive` output.', accept: ['/drafts export-ignore', 'drafts export-ignore', 'drafts/** export-ignore', '/drafts/** export-ignore'], model: '/drafts export-ignore', explain: 'Commit it before tagging: archive reads the attributes of the tree it archives.' },
       ],
     },
     {

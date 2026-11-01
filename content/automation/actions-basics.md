@@ -42,6 +42,15 @@ jobs:
 
 `actions/checkout` puts your repository's code on the runner. Each `run:` step that exits non-zero fails the job, and a failed job marks the workflow (and the commit or PR check) as failed.
 
+```replay
+title: The first workflow run
+show: graph
+setup: github you/notes; gh auth login; git clone -q https://github.com/you/notes.git; cd notes
+step: mkdir -p .github/workflows && printf "on: push\njobs:\n  test:\n    runs-on: ubuntu-latest\n    steps:\n      - run: npm test\n" > .github/workflows/ci.yml | A workflow is a YAML file in .github/workflows/: when to run, and what.
+step: git add .github && git commit -qm "ci: run tests on every push" && git push -q | Pushing it is enough: GitHub reads the file and starts a run.
+step: gh run list | Every push now gets a run, with a status you (and branch protection) can check.
+```
+
 ## commands | Working with Actions
 
 ```term

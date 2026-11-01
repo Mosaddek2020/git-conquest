@@ -38,6 +38,14 @@ Aliases starting with `!` run shell commands: `git config --global alias.cleanup
 
 All of them live in `~/.gitconfig`, a plain text file you can back up and copy between machines.
 
+```replay
+title: An alias for a long command
+show: graph
+setup: init; commit "Create app"; commit "Add search"
+step: git config --global alias.lg "log --oneline --graph --all" | An alias is a config entry: alias.<name> = <command>.
+step: git lg | Now `git lg` runs the long log command.
+```
+
 ## analogy | Speed-dial
 
 Aliases are speed-dial for git. You still know the full number (the real command), but you do not have to dial it every time.

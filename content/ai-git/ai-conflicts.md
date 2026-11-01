@@ -17,6 +17,15 @@ A correct resolution keeps the **intent of both sides**. Checklist after any res
 
 Assistants are good at removing markers and producing plausible code. They do not know which side was more important, and they rarely say when they dropped something.
 
+```replay
+title: A suggested resolution still needs your judgement
+show: graph,areas
+setup: init; commit "Create pricing" pricing.js; git switch -c add-tax; commit "Add VAT" pricing.js; git switch main; commit "Member discount" pricing.js
+step: git merge add-tax | Both branches changed the end of pricing.js: a conflict. An assistant can propose a resolution…
+step: printf "Create pricing\nMember discount\nAdd VAT\n" > pricing.js && git add pricing.js | …you check it keeps both intents (the discount and the VAT) and run the tests before staging it.
+step: git commit -q --no-edit | Only then do you conclude the merge.
+```
+
 ## commands | Let it propose, make the tests decide
 
 ```term

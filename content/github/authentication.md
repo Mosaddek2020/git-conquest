@@ -24,6 +24,15 @@ ssh-keys
 
 An SSH key pair is two files. The **private** key (`id_ed25519`) never leaves your machine. The **public** key (`id_ed25519.pub`) can be shared freely: GitHub uses it to check that whoever connects holds the matching private key.
 
+```replay
+title: An SSH key for GitHub
+show: graph
+setup: init
+step: ssh-keygen -t ed25519 -C dev@example.com | A key pair: the private half stays on your machine…
+step: gh auth login && gh ssh-key add ~/.ssh/id_ed25519.pub --title laptop | …the public half goes to your GitHub account.
+step: ssh -T git@github.com | GitHub now recognises you over SSH, with no password to type or leak.
+```
+
 ## commands | Setting up both
 
 **HTTPS with the GitHub CLI (easiest)**

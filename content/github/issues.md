@@ -21,6 +21,15 @@ Issues and pull requests **share one numbering sequence** per repository: if iss
 
 **Closing keywords** link work to issues. In a PR description (or a commit message on the default branch), `Fixes #42`, `Closes #42` or `Resolves #42` closes issue 42 automatically when the PR merges.
 
+```replay
+title: From issue to fix
+show: graph
+setup: github you/app; gh auth login; git clone -q https://github.com/you/app.git; cd app
+step: gh issue create --title "Crash on an empty cart" --body "Steps: open the cart with nothing in it." | The issue records the problem: issue #1.
+step: git switch -qc fix-empty-cart; commit "Fix crash on an empty cart, fixes #1" | The fix lives on its own branch; its message mentions the issue.
+step: git push -qu origin fix-empty-cart && gh pr create --fill && gh pr merge 2 --squash | Merging the PR closes issue #1 automatically ("fixes #1").
+```
+
 ## commands | Issues from the terminal
 
 ```term

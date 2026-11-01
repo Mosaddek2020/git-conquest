@@ -19,6 +19,15 @@ The real fix had two parts, in this order: **revoke the key** (assume it is stol
 
 `git filter-repo` is the tool the git project recommends (it replaced `git filter-branch`). It refuses to run in a repository that does not look like a **fresh clone**, so you cannot destroy unpushed work by accident. After running, it **removes the `origin` remote** so you do not push the rewritten history without thinking.
 
+```replay
+title: filter-repo removes a file from every commit
+show: graph
+setup: init; commit "Create app" app.js; echo "PASSWORD=hunter2" > .env && git add .env && git commit -qm "Add config"; commit "Add search" search.js
+step: git log --oneline --stat -- .env | The .env file is in the history, even if a later commit deleted it.
+step: git filter-repo --invert-paths --path .env --force | filter-repo rewrites every commit without it: new ids from that point on.
+step: git log --oneline --stat -- .env | Gone from history. (If it was ever pushed: rotate the password.)
+```
+
 ## commands | Rewrite, then push carefully
 
 ```term
