@@ -7,6 +7,7 @@ import { makeHelpers } from '../js/lab.js';
 import { fakeBinary } from '../js/git/filters.js';
 import { githubVerified, noteFor } from '../js/git/extras.js';
 import { headCommit } from '../js/git/core.js';
+import { enableDependabot } from '../js/git/ghextra.js';
 
 let failed = 0, passed = 0;
 function scenario(name, fn) {
@@ -377,6 +378,160 @@ scenario('rebase --exec runs commands and -f re-signs history', ({ world, H, run
   run('git rebase -f -S main');
   const head = headCommit(H.shell.repo);
   expect(world.signatures.has(head) && world.signatures.has(world.commit(head).parents[0]), 'both commits re-signed');
+});
+
+scenario('merge -X ours/theirs and -s ours', ({ H, run, expect }) => {
+  H.repo('~/m');
+  H.commit('base', { 'f.txt': 'a\nb\nc\n' });
+  run('git switch -qc x');
+  H.commit('theirs', { 'f.txt': 'a\nB-theirs\nc\n', 'new.txt': 'n\n' });
+  run('git switch -q main');
+  H.commit('ours', { 'f.txt': 'a\nB-ours\nc\nd\n' });
+  let r = run('git merge x');
+  expect(r.code === 1, 'plain merge conflicts');
+  run('git merge --abort');
+  r = run('git merge -X theirs x -m m1');
+  expect(r.code === 0 && H.shell.readFile(H.shell.resolvePath('f.txt')) === 'a\nB-theirs\nc\nd\n', '-X theirs keeps our clean change, takes their side of the hunk');
+  run('git reset -q --hard HEAD~1');
+  run('git merge -Xours x -m m2');
+  expect(H.shell.readFile(H.shell.resolvePath('f.txt')) === 'a\nB-ours\nc\nd\n' && H.shell.readFile(H.shell.resolvePath('new.txt')) === 'n\n', '-X ours still brings new files');
+  run('git reset -q --hard HEAD~1');
+  run('git merge -s ours x -m m3');
+  expect(H.shell.readFile(H.shell.resolvePath('new.txt')) === undefined, '-s ours ignores their tree');
+});
+
+scenario('rebase --update-refs moves a stack; rebase.updateRefs config', ({ H, run, expect }) => {
+  H.repo('~/st');
+  H.commit('base', { 'a': '1\n' });
+  run('git switch -qc p1'); H.commit('p1', { 'one': '1\n' });
+  run('git switch -qc p2'); H.commit('p2', { 'two': '2\n' });
+  run('git switch -qc p3'); H.commit('p3', { 'three': '3\n' });
+  run('git switch -q main'); H.commit('main2', { 'm': 'm\n' });
+  run('git switch -q p3');
+  let r = run('git rebase --update-refs main');
+  const t = n => H.shell.run(`git rev-parse ${n}`, { record: false }).out[0];
+  expect(/refs\/heads\/p1/.test(r.text) && t('p1^') === t('main') && t('p2^') === t('p1') && t('p3^') === t('p2'), 'stack moved');
+  run('git switch -q main'); H.commit('main3', { 'm': 'mm\n' });
+  run('git switch -q p3 && git config rebase.updateRefs true');
+  r = run('git rebase main');
+  expect(t('p1^') === t('main') && /update-refs/.test(r.text), 'config default');
+  run('git switch -q main'); H.commit('main4', { 'm': 'mmm\n' });
+  run('git switch -q p3');
+  r = run('git rebase -i main', c => c.replace(/^pick (\w+) p2$/m, 'drop $1 p2'));
+  expect(/update-ref refs\/heads\/p1/.test(H.shell.lastEditor || r.text) || t('p1^') === t('main'), 'interactive todo has update-ref');
+  expect(t('p2') === t('p1'), 'dropping p2 leaves its branch at p1');
+});
+
+scenario('includeIf identities, config --file and --show-origin', ({ H, run, expect }) => {
+  run('git config --global includeIf.gitdir:~/work/.path ~/.gitconfig-work');
+  run('git config --file ~/.gitconfig-work user.email dev@acme.com');
+  H.repo('~/work/api');
+  let r = run('git config --show-origin user.email');
+  expect(/gitconfig-work\tdev@acme.com/.test(r.text), 'work email from include');
+  H.commit('init', { 'a': '1\n' });
+  r = run('git log -1 --format=%ae');
+  expect(r.text.trim() === 'dev@acme.com', 'commit uses work email');
+  H.repo('~/hobby');
+  r = run('git config user.email');
+  expect(r.text.trim() === 'dev@example.com', 'personal email elsewhere');
+  run('git config --global "includeIf.hasconfig:remote.*.url:https://github.com/acme/**.path" ~/.gitconfig-work');
+  run('git remote add origin https://github.com/acme/site.git');
+  r = run('git config user.email');
+  expect(r.text.trim() === 'dev@acme.com', 'hasconfig:remote url include');
+});
+
+scenario('mailmap, shortlog -sne, check-mailmap; blame ignore revs and -w; log -L and -G', ({ H, run, expect }) => {
+  H.repo('~/b');
+  H.commit('add math', { 'm.js': 'function add(a, b) {\n  return a + b;\n}\n\nfunction sub(a, b) {\n  return a - b;\n}\n' }, { author: 'Sam Lee <sam@old.com>' });
+  H.commit('tweak add', { 'm.js': 'function add(a, b) {\n  return a + b + 0;\n}\n\nfunction sub(a, b) {\n  return a - b;\n}\n' }, { author: 'sam <sam@laptop.local>' });
+  H.commit('Reindent', { 'm.js': 'function add(a, b) {\n    return a + b + 0;\n}\n\nfunction sub(a, b) {\n    return a - b;\n}\n' });
+  let r = run('git shortlog -sne');
+  expect(/Sam Lee <sam@old.com>/.test(r.text) && /sam <sam@laptop.local>/.test(r.text), 'two identities before mailmap');
+  H.write('.mailmap', 'Sam Lee <sam@acme.com> <sam@old.com>\nSam Lee <sam@acme.com> <sam@laptop.local>\n');
+  r = run('git shortlog -sne');
+  expect(/2\tSam Lee <sam@acme.com>/.test(r.text), 'merged by mailmap');
+  r = run('git check-mailmap "sam <sam@laptop.local>"');
+  expect(r.text.trim() === 'Sam Lee <sam@acme.com>', 'check-mailmap');
+  r = run('git blame m.js');
+  expect(/Dev Learner/.test(r.text.split('\n')[5]), 'reindent owns line 6');
+  r = run('git blame -w m.js');
+  expect(!/Dev Learner/.test(r.text), '-w looks through whitespace');
+  run('git rev-parse HEAD > .git-blame-ignore-revs && git config blame.ignoreRevsFile .git-blame-ignore-revs');
+  r = run('git blame m.js');
+  expect(!/Dev Learner/.test(r.text) && /Sam Lee/.test(r.text.split('\n')[1]), 'ignored rev, mailmapped author');
+  r = run('git log -L :sub:m.js --oneline');
+  expect(/Reindent/.test(r.text) && /add math/.test(r.text) && !/tweak add/.test(r.text), 'log -L follows one function');
+  r = run('git log -G "\\+ 0" --oneline');
+  expect(/tweak add/.test(r.text) && /Reindent/.test(r.text) && !/add math/.test(r.text), '-G');
+});
+
+scenario('gc, count-objects, reflog expire, fsck; bundles; archive with export-ignore', ({ H, run, expect, world }) => {
+  H.repo('~/app');
+  H.commit('one', { 'a.txt': '1\n', 'tests/t.js': 't\n', '.gitattributes': '/tests export-ignore\n.gitattributes export-ignore\n' });
+  H.commit('two', { 'a.txt': '2\n' });
+  let r = run('git count-objects -v');
+  expect(/^count: [1-9]/m.test(r.text) && /in-pack: 0/.test(r.text), 'loose before gc');
+  run('git gc -q');
+  r = run('git count-objects -v');
+  expect(/^count: 0/m.test(r.text) && /packs: 1/.test(r.text), 'packed after gc');
+  run('git reset -q --hard HEAD~1 && git reflog expire --expire=now --all');
+  r = run('git fsck');
+  expect(/dangling commit/.test(r.text), 'orphan visible');
+  run('git gc --prune=now -q');
+  r = run('git fsck');
+  expect(!/dangling/.test(r.text), 'pruned');
+  run('git tag v1.0');
+  r = run('git archive --format=tar.gz --prefix=app-1.0/ -o ../app-1.0.tar.gz v1.0 && tar -tzf ../app-1.0.tar.gz');
+  expect(r.text.trim() === 'app-1.0/a.txt', 'export-ignore: ' + r.text);
+  run('git bundle create ../app.bundle --all');
+  r = run('git bundle verify ../app.bundle');
+  expect(/is okay/.test(r.text) && /complete history/.test(r.text), 'verify');
+  run('cd ~ && git clone -q app.bundle copy');
+  expect(world.repos.has(world.home + '/copy') && H.shell.run('cd ~/copy && git log --oneline', { record: false }).out.length === 1, 'clone from bundle');
+  H.cd('~/app');
+  H.commit('three', { 'a.txt': '3\n' });
+  run('git bundle create ../inc.bundle v1.0..main');
+  r = run('cd ~/copy && git bundle verify ../inc.bundle');
+  expect(/is okay/.test(r.text) && /requires/.test(r.text), 'incremental bundle verifies against copy');
+  r = run('git pull ../inc.bundle main');
+  expect(r.code === 0 && /3/.test(H.shell.readFile(H.shell.resolvePath('a.txt'))), 'pull from bundle');
+});
+
+scenario('Actions matrix with fail-fast, reusable workflow with inputs and secrets', ({ H, run, expect, world }) => {
+  world.testRule = (files, ctx) => (ctx?.matrix?.node === 18 && /findLast/.test(files['src/app.js'] || '') ? { ok: false, log: ['FAIL findLast is not a function'] } : { ok: true, log: ['PASS'] });
+  H.remote('you', 'ci', [{ message: 'init', files: { 'src/app.js': 'x.findLast(Boolean)\n', 'deploy.sh': 'deploy\n', '.github/workflows/deploy.yml': 'on:\n  workflow_call:\n    inputs:\n      environment:\n        required: true\n        type: string\n    secrets:\n      TOKEN:\n        required: true\njobs:\n  deploy:\n    runs-on: ubuntu-latest\n    environment: ${{ inputs.environment }}\n    steps:\n      - run: ./deploy.sh ${{ inputs.environment }}\n        env:\n          DEPLOY_TOKEN: ${{ secrets.TOKEN }}\n', '.github/workflows/ci.yml': 'name: CI\non: push\njobs:\n  test:\n    runs-on: ubuntu-latest\n    strategy:\n      matrix:\n        node: [18, 20, 22]\n    steps:\n      - run: npm test\n  ship:\n    needs: test\n    uses: ./.github/workflows/deploy.yml\n    with:\n      environment: staging\n    secrets: inherit\n' } }], { collaborators: ['you'] });
+  world.github.authed = true;
+  const runOf = () => H.bare('you/ci').meta.runs[0];
+  let rr = runOf();
+  expect(rr.jobs.find(j => j.id === 'test (18)').conclusion === 'failure' && rr.jobs.find(j => j.id === 'test (20)').conclusion === 'cancelled' && rr.jobs.find(j => j.id === 'ship').conclusion === 'skipped', 'fail-fast + needs');
+  run('git clone -q https://github.com/you/ci.git && cd ci');
+  run("echo 'x.at(-1)' > src/app.js && git commit -qam 'Avoid findLast' && git push -q");
+  rr = runOf();
+  expect(rr.conclusion === 'failure' && /Secret TOKEN is required/.test(rr.jobs.find(j => j.id === 'ship').log.join('\n')), 'missing secret');
+  run('gh secret set TOKEN --body t && gh run rerun ' + rr.id + ' --failed');
+  rr = runOf();
+  expect(rr.conclusion === 'success' && H.bare('you/ci').meta.environments.staging, 'deployed through reusable workflow');
+});
+
+scenario('Dependabot alerts, security PRs, gh api with --jq, stacked PR retargeting', ({ H, run, expect, world }) => {
+  const bare = H.remote('you', 'shop', [{ message: 'init', files: { 'package.json': '{\n  "dependencies": {\n    "lodash": "^4.17.20"\n  }\n}\n' } }], { collaborators: ['you'] });
+  enableDependabot(world, bare);
+  world.github.authed = true;
+  run('git clone -q https://github.com/you/shop.git && cd shop');
+  let r = run('gh api repos/{owner}/{repo}/dependabot/alerts --jq ".[0].security_advisory.ghsa_id"');
+  expect(r.text.trim() === 'GHSA-35jh-r3h4-6jhm', 'alert via api');
+  expect(bare.meta.prs[0].author === 'dependabot[bot]', 'security PR opened');
+  run('gh pr merge 1 --squash');
+  expect(bare.meta.dependabot.alerts[0].state === 'fixed', 'alert fixed after merge');
+  run('gh repo edit --delete-branch-on-merge');
+  run('git pull -q && git switch -qc part-1 && echo 1 > one && git add . && git commit -qm one && git push -qu origin part-1');
+  run('git switch -qc part-2 && echo 2 > two && git add . && git commit -qm two && git push -qu origin part-2');
+  run('gh pr create --base main --head part-1 --title One --body x && gh pr create --base part-1 --head part-2 --title Two --body y');
+  run('gh pr merge 2 --squash');
+  const two = bare.meta.prs.find(p => p.title === 'Two');
+  expect(two.base === 'main' && !bare.refs['refs/heads/part-1'], 'retargeted after auto-delete');
+  r = run('gh api repos/{owner}/{repo}/pulls --jq "map(select(.base.ref == \\"main\\")) | length"');
+  expect(r.text.trim() === '1', 'jq select: ' + r.text);
 });
 
 console.log(`\n${passed}/${passed + failed} engine scenarios pass`);

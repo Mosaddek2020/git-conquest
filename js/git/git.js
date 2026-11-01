@@ -9,6 +9,7 @@ import {
   headTreeFlat, toRepoPath, worktree, readWork, writeWork, removeWork, ignoreRules, isIgnored,
   computeStatus, collapseUntracked, checkoutTree, resetHard, requireIdentity, indexTree, makeCommit,
   mergeTrees, applyMerge, conflictLines, describeCommit, logRef, identity, cleanContent, cleanHash, isGitlink, absentOk,
+  configGet, configOrigin, configLayers, mailmapFor, parseConfigFile, writeConfigFile,
 } from './core.js';
 import { remoteCommands } from './remote.js';
 
@@ -276,12 +277,33 @@ commands.init = (ctx, args) => {
 };
 
 commands.config = (ctx, args) => {
-  const o = parseOpts(args, { bool: ['--global', '--local', '--list', '-l', '--unset', '--get', '--show-origin', '--system'], val: [] });
+  const o = parseOpts(args, { bool: ['--global', '--local', '--list', '-l', '--unset', '--get', '--show-origin', '--system', '--includes', '--no-includes'], val: ['--file', '-f', '--get-regexp'] });
   const w = ctx.world;
+  const fileArg = o['--file'] || o['-f'];
+  const filePath = fileArg ? normPath(fileArg.startsWith('/') ? fileArg : fileArg.startsWith('~') ? w.home + fileArg.slice(1) : ctx.cwd + '/' + fileArg) : null;
+  const normKey = key => key.replace(/^([^.]+)\./, (m, sec) => sec.toLowerCase() + '.');
+  const validKey = key => /^[a-zA-Z][\w-]*(\.[^\s]+)?\.[a-zA-Z][\w-]*$/.test(key);
+  if (filePath) {
+    const text = w.files.get(filePath);
+    const vals = parseConfigFile(text);
+    if (o['--list'] || o['-l']) { for (const [k, v] of Object.entries(vals)) ctx.out.push(`${k}=${v}`); return 0; }
+    const key = o._[0];
+    if (!key) throw new GitError('usage: git config [<options>]', 129);
+    if (!validKey(key)) throw new GitError(`error: key does not contain a section: ${key}`, 2);
+    if (o['--unset']) { if (text !== undefined) w.writeFile(filePath, writeConfigFile(text, key, null)); return 0; }
+    if (o._.length === 1 || o['--get']) { const hit = Object.entries(vals).find(([k]) => k.toLowerCase() === normKey(key).toLowerCase()); if (!hit) return 1; ctx.out.push(hit[1]); return 0; }
+    w.writeFile(filePath, writeConfigFile(text, key, o._.slice(1).join(' ')));
+    w.emit({ type: 'config', key: normKey(key), value: o._.slice(1).join(' '), file: filePath });
+    return 0;
+  }
   const scope = o['--global'] || o['--system'] ? w.globalConfig : (ctx.repo ? ctx.repo.config : null);
   if (o['--list'] || o['-l']) {
     const showG = !o['--local'];
     const showL = !o['--global'] && ctx.repo;
+    if (ctx.repo && !o['--global'] && !o['--local']) {
+      for (const l of configLayers(ctx.repo)) for (const [k, v] of Object.entries(l.values)) ctx.out.push(`${o['--show-origin'] ? l.origin + '\t' : ''}${k}=${v}`);
+      return 0;
+    }
     if (showG) for (const [k, v] of Object.entries(w.globalConfig)) ctx.out.push(`${o['--show-origin'] ? 'file:~/.gitconfig\t' : ''}${k}=${v}`);
     if (showL) for (const [k, v] of Object.entries(ctx.repo.config)) ctx.out.push(`${o['--show-origin'] ? 'file:.git/config\t' : ''}${k}=${v}`);
     return 0;
@@ -289,13 +311,16 @@ commands.config = (ctx, args) => {
   const key = o._[0];
   if (!key) throw new GitError('usage: git config [<options>]', 129);
   if (!scope) throw new GitError('fatal: --local can only be used inside a git repository');
-  if (!/^[a-zA-Z][\w-]*(\.[^\s]+)?\.[a-zA-Z][\w-]*$/.test(key)) throw new GitError(`error: key does not contain a section: ${key}`, 2);
-  const k = key.replace(/^([^.]+)\./, (m, s) => s.toLowerCase() + '.');
+  if (!validKey(key)) throw new GitError(`error: key does not contain a section: ${key}`, 2);
+  const k = normKey(key);
   if (o['--unset']) { delete scope[k]; return 0; }
   if (o._.length === 1 || o['--get']) {
-    const v = (ctx.repo && !o['--global'] && ctx.repo.config[k] !== undefined) ? ctx.repo.config[k] : w.globalConfig[k];
+    let v, origin = null;
+    if (o['--global']) { v = w.globalConfig[k]; origin = 'file:~/.gitconfig'; }
+    else if (ctx.repo) { v = configGet(ctx.repo, k); origin = configOrigin(ctx.repo, k); }
+    else { v = w.globalConfig[k]; origin = 'file:~/.gitconfig'; }
     if (v === undefined) return 1;
-    ctx.out.push(v);
+    ctx.out.push(o['--show-origin'] ? `${origin}\t${v}` : v);
     return 0;
   }
   scope[k] = o._.slice(1).join(' ');
@@ -668,10 +693,13 @@ commands.commit = (ctx, args) => {
 commands.log = (ctx, args) => {
   const repo = needRepo(ctx);
   const o = parseOpts(args, {
-    bool: ['--oneline', '--graph', '--all', '--decorate', '-p', '--patch', '--stat', '--reverse', '--first-parent', '--no-merges', '--merges', '--name-only', '--abbrev-commit', '--follow', '--show-signature', '--no-notes', '--notes'],
-    val: ['-n', '--max-count', '--author', '--grep', '--format', '--pretty', '--since', '--until', '-S'],
+    bool: ['--oneline', '--graph', '--all', '--decorate', '-p', '--patch', '--stat', '--reverse', '--first-parent', '--no-merges', '--merges', '--name-only', '--abbrev-commit', '--follow', '--show-signature', '--no-notes', '--notes', '--use-mailmap', '--no-mailmap', '--mailmap', '-s', '--no-patch'],
+    val: ['-n', '--max-count', '--author', '--grep', '--format', '--pretty', '--since', '--until', '-S', '-G', '-L'],
   });
   const w = ctx.world;
+  const mailmap = !o['--no-mailmap'] && String(configGet(repo, 'log.mailmap') ?? 'true') !== 'false';
+  const mm = mailmap ? mailmapFor(repo) : (x => x);
+  if (o['-L']) return lineLog(ctx, repo, o, mm);
   let heads = [], exclude = [];
   const revs = o._.filter(a => !(o.paths === null && !/[.^~@]|^[0-9a-f]{4,40}$/.test(a) && resolve(repo, a, { quiet: true }) === null && (readWork(repo, relPathSafe(ctx, a)) !== undefined)));
   const filePaths = [...(o.paths || []), ...o._.filter(a => !revs.includes(a))];
@@ -704,6 +732,17 @@ commands.log = (ctx, args) => {
     const count = (h) => { let n = 0; for (const [, b] of commitTreeFlat(repo, h)) n += w.objects.get(b).content.split(needle).length - 1; return n; };
     list = list.filter(h => { const c = w.commit(h); return count(h) !== (c.parents[0] ? count(c.parents[0]) : 0); });
   }
+  if (o['-G']) {
+    const re = new RegExp(o['-G']);
+    list = list.filter(h => {
+      const c = w.commit(h);
+      const before = c.parents[0] ? commitTreeFlat(repo, c.parents[0]) : new Map();
+      return treePairs(before, commitTreeFlat(repo, h)).some(p => {
+        const a = splitLines(p.old ? w.objects.get(p.old).content : ''), b = splitLines(p.new ? w.objects.get(p.new).content : '');
+        return diffLines(a, b).some(x => x.op === '+' ? re.test(b[x.b]) : x.op === '-' ? re.test(a[x.a]) : false);
+      });
+    });
+  }
   if (filePaths.length) {
     const match = specMatcher(ctx, filePaths);
     list = list.filter(h => {
@@ -725,8 +764,9 @@ commands.log = (ctx, args) => {
     let body = [];
     if (fmt && fmt !== 'oneline' && fmt !== 'short' && fmt !== 'full') {
       const f = fmt.replace(/^(format|tformat):/, '');
-      body.push(f.replace(/%(G\?|GS|GK|N|H|h|s|an|ae|ad|ar|d|D|n|b|cn|ce|P|p|T|t|Cred|Cgreen|Cyellow|Cblue|Creset|ad)/g, (m, k) => logHooks.format[k] ? logHooks.format[k](repo, h, o) : ({
-        H: h, h: shortHash(h), s: firstLine(c.message), an: c.author.name, ae: c.author.email, ad: formatDate(c.author.time),
+      const ma = mm(c.author);
+      body.push(f.replace(/%(G\?|GS|GK|N|H|h|s|aN|aE|an|ae|ad|ar|d|D|n|b|cn|ce|P|p|T|t|Cred|Cgreen|Cyellow|Cblue|Creset|ad)/g, (m, k) => logHooks.format[k] ? logHooks.format[k](repo, h, o) : ({
+        H: h, h: shortHash(h), s: firstLine(c.message), an: c.author.name, ae: c.author.email, aN: ma.name, aE: ma.email, ad: formatDate(c.author.time),
         ar: relativeTime(c.author.time, w.time), d: decorate(repo, h, refMap), D: stripAnsi(decorate(repo, h, refMap)).replace(/^ \(|\)$/g, ''), n: '\n', b: c.message.split('\n').slice(2).join('\n'),
         cn: c.committer.name, ce: c.committer.email, P: c.parents.join(' '), p: c.parents.map(shortHash).join(' '), T: c.tree, t: shortHash(c.tree),
         Cred: '\x1b[31m', Cgreen: '\x1b[32m', Cyellow: '\x1b[33m', Cblue: '\x1b[34m', Creset: '\x1b[0m',
@@ -738,7 +778,8 @@ commands.log = (ctx, args) => {
       body.push(C.yellow(`commit ${h}`) + decorate(repo, h, refMap));
       for (const fn of logHooks.header) body.push(...fn(repo, h, o));
       if (c.parents.length > 1) body.push(`Merge: ${c.parents.map(shortHash).join(' ')}`);
-      body.push(`Author: ${c.author.name} <${c.author.email}>`);
+      const ma = mm(c.author);
+      body.push(`Author: ${ma.name} <${ma.email}>`);
       body.push(`Date:   ${formatDate(c.author.time)}`);
       body.push('');
       for (const l of c.message.split('\n')) body.push('    ' + l);
@@ -759,12 +800,83 @@ commands.log = (ctx, args) => {
       for (const extra of g.after) lines.push(extra);
     } else {
       lines.push(...body);
-      if (!o['--oneline'] && fmt !== 'oneline' && !(fmt && fmt.startsWith('format')) && idx < list.length - 1) lines.push('');
+      // custom --format/--pretty strings behave like tformat: no blank line between entries
+      const builtIn = !fmt || ['short', 'medium', 'full', 'fuller', 'raw'].includes(fmt);
+      if (!o['--oneline'] && fmt !== 'oneline' && builtIn && idx < list.length - 1) lines.push('');
     }
   });
   ctx.out.push(...lines);
   return 0;
 };
+
+// git log -L <start>,<end>:<file> and -L :<funcname>:<file>: follow one range of lines back
+// through history, showing only the commits (and the part of each diff) that touched it.
+function lineLog(ctx, repo, o, mm) {
+  const w = ctx.world;
+  const spec = o['-L'];
+  const m = spec.match(/^(?:(\d+)(?:,(\+?\d+))?|:([^:]+)):(.+)$/);
+  if (!m) throw new GitError(`fatal: invalid -L argument '${spec}'`, 128);
+  const rel = relPath(ctx, m[4]);
+  const start = o._.length ? resolveCommit(repo, o._[0]) : headCommit(repo);
+  if (!start) throw new GitError(`fatal: your current branch '${currentBranch(repo)}' does not have any commits yet`);
+  const textAt = h => { const f = commitTreeFlat(repo, h); return f.has(rel) ? w.objects.get(f.get(rel)).content : null; };
+  const headText = textAt(start);
+  if (headText === null) throw new GitError(`fatal: There is no path ${rel} in the commit`, 128);
+  const cur = splitLines(headText);
+  let s, e;
+  if (m[3]) {
+    const name = m[3].replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const re = new RegExp(`(function\\s+${name}\\b|\\b${name}\\s*[:=]\\s*(async\\s*)?(function|\\()|\\bdef\\s+${name}\\b|^\\s*(async\\s+)?${name}\\s*\\([^)]*\\)\\s*\\{)`);
+    s = cur.findIndex(l => re.test(l));
+    if (s < 0) throw new GitError(`fatal: -L parameter '${m[3]}' starting at line 1: no match`, 128);
+    e = s;
+    if (/\{\s*$/.test(cur[s])) { let depth = 0; for (let i = s; i < cur.length; i++) { depth += (cur[i].match(/\{/g) || []).length - (cur[i].match(/\}/g) || []).length; e = i; if (depth <= 0 && i > s) break; } }
+    else { const ind = cur[s].match(/^\s*/)[0].length; e = s; for (let i = s + 1; i < cur.length; i++) { if (cur[i].trim() && cur[i].match(/^\s*/)[0].length <= ind) break; if (cur[i].trim()) e = i; } }
+  } else {
+    s = Number(m[1]) - 1;
+    e = m[2] ? (m[2].startsWith('+') ? s + Number(m[2].slice(1)) - 1 : Number(m[2]) - 1) : s;
+    if (s < 0 || s >= cur.length) throw new GitError(`fatal: file ${rel} has only ${cur.length} lines`, 128);
+    e = Math.min(e, cur.length - 1);
+  }
+  const lines = [];
+  const chain = revList(w, [start], [], { firstParent: true });
+  const n = Number(o['-n'] || o['--max-count'] || 0);
+  let shown = 0;
+  for (const h of chain) {
+    if (s === null) break;
+    const c = w.commit(h);
+    const childText = textAt(h);
+    if (childText === null) break;
+    const parentText = c.parents[0] ? textAt(c.parents[0]) : null;
+    const pl2 = splitLines(parentText ?? ''), cl = splitLines(childText);
+    const ops = diffLines(pl2, cl);
+    let touched = parentText === null, ps = null, pe = null, lastB = -1;
+    for (const op of ops) {
+      if (op.op === '=') { lastB = op.b; if (op.b >= s && op.b <= e) { ps = ps ?? op.a; pe = op.a; } } else if (op.op === '+') { lastB = op.b; if (op.b >= s && op.b <= e) touched = true; } else if (lastB >= s - 1 && lastB < e) { touched = true; ps = ps ?? op.a; pe = op.a; }
+    }
+    if (touched && (!n || shown < n)) {
+      shown++;
+      const ma = mm(c.author);
+      if (o['--oneline']) lines.push(`${C.yellow(shortHash(h))} ${firstLine(c.message)}`);
+      else lines.push(C.yellow(`commit ${h}`), `Author: ${ma.name} <${ma.email}>`, `Date:   ${formatDate(c.author.time)}`, '', ...c.message.split('\n').map(l => '    ' + l));
+      if (!o['-s'] && !o['--no-patch']) {
+        const body = [];
+        lastB = -1;
+        for (const op of ops) {
+          if (op.op === '=') { lastB = op.b; if (op.b >= s && op.b <= e) body.push(' ' + cl[op.b]); } else if (op.op === '+') { lastB = op.b; if (op.b >= s && op.b <= e) body.push(C.green('+' + cl[op.b])); } else if (ps !== null && op.a >= ps && op.a <= pe) body.push(C.red('-' + pl2[op.a]));
+        }
+        const oldLen = ps === null ? 0 : pe - ps + 1;
+        lines.push('', C.bold(`diff --git a/${rel} b/${rel}`), C.bold(parentText === null ? '--- /dev/null' : `--- a/${rel}`), C.bold(`+++ b/${rel}`), C.cyan(`@@ -${ps === null ? 0 : ps + 1},${oldLen} +${s + 1},${e - s + 1} @@`), ...body);
+        lines.push('');
+      } else if (!o['--oneline']) lines.push('');
+    }
+    if (ps === null) break; // the range was created in this commit
+    s = ps; e = pe;
+  }
+  while (lines.length && lines[lines.length - 1] === '') lines.pop();
+  ctx.out.push(...lines);
+  return 0;
+}
 
 export function parseWhen(s, now) {
   s = String(s).trim().toLowerCase();
@@ -903,7 +1015,7 @@ function wordDiff(a, b) {
 
 commands.show = (ctx, args) => {
   const repo = needRepo(ctx);
-  const o = parseOpts(args, { bool: ['--stat', '--name-only', '--oneline', '-s', '--no-patch'], val: ['--format', '--pretty'] });
+  const o = parseOpts(args, { bool: ['--stat', '--name-only', '--oneline', '-s', '--no-patch', '--word-diff', '--color-words', '-w'], val: ['--format', '--pretty'] });
   const w = ctx.world;
   const target = o._[0] || 'HEAD';
   if (target.includes(':')) {
@@ -939,6 +1051,7 @@ commands.show = (ctx, args) => {
   if (pairs.length) ctx.out.push('');
   if (o['--stat']) ctx.out.push(...statLines(w, pairs));
   else if (o['--name-only']) ctx.out.push(...pairs.map(p => p.path));
+  else if (o['--word-diff'] || o['--color-words']) for (const p of pairs) ctx.out.push(C.bold(`diff --git a/${p.path} b/${p.path}`), ...wordDiff(p.old ? w.objects.get(p.old).content : '', p.new ? w.objects.get(p.new).content : ''));
   else for (const p of pairs) ctx.out.push(...fileDiff(w, p.path, p.old, p.new));
   return 0;
 };
@@ -1319,7 +1432,7 @@ function mergeLabel(repo, name) {
   return `commit '${name}'`;
 }
 
-export function mergeInto(ctx, theirsRev, { noFF = false, ffOnly = false, squash = false, message = null, label = null, noCommit = false } = {}) {
+export function mergeInto(ctx, theirsRev, { noFF = false, ffOnly = false, squash = false, message = null, label = null, noCommit = false, favor = null, strategy = null } = {}) {
   const repo = ctx.repo;
   const w = ctx.world;
   const ours = headCommit(repo);
@@ -1350,7 +1463,8 @@ export function mergeInto(ctx, theirsRev, { noFF = false, ffOnly = false, squash
   if (st.staged.length || dirty.length) {
     throw new GitError(`error: Your local changes to the following files would be overwritten by merge:\n${(dirty.length ? dirty : st.staged.map(s => s.path)).map(p => '\t' + p).join('\n')}\nPlease commit your changes or stash them before you merge.\nAborting`, 1);
   }
-  const merge = mergeTrees(w, baseFlat, oursFlat, theirsFlat, { ours: 'HEAD', theirs: name });
+  // -s ours records the merge but keeps our tree exactly; -X ours/theirs only settles conflicting hunks
+  const merge = strategy === 'ours' ? { result: new Map(oursFlat), conflicts: [] } : mergeTrees(w, baseFlat, oursFlat, theirsFlat, { ours: 'HEAD', theirs: name, favor });
   applyMerge(repo, oursFlat, merge);
   const msg = message || `Merge ${mergeLabel(repo, theirsRev)}${cur && cur !== 'main' && cur !== 'master' ? ` into ${cur}` : ''}`;
   for (const p of touched) if (oursFlat.get(p) && theirsFlat.get(p) && oursFlat.get(p) !== baseFlat.get(p) && !merge.conflicts.find(c => c.path === p)) ctx.out.push(`Auto-merging ${p}`);
@@ -1381,7 +1495,9 @@ export function mergeInto(ctx, theirsRev, { noFF = false, ffOnly = false, squash
 
 commands.merge = (ctx, args) => {
   const repo = needWorkTree(ctx);
-  const o = parseOpts(args, { bool: ['--no-ff', '--ff-only', '--ff', '--squash', '--abort', '--continue', '--no-edit', '--no-commit', '-q'], val: ['-m'] });
+  const o = parseOpts(args, { bool: ['--no-ff', '--ff-only', '--ff', '--squash', '--abort', '--continue', '--no-edit', '--no-commit', '-q'], val: ['-m', '-X', '-s'], alias: { '--strategy-option': '-X', '--strategy': '-s' } });
+  const favor = strategyOption(o['-X']);
+  if (o['-s'] && !['ort', 'recursive', 'ours', 'resolve', 'octopus', 'subtree'].includes(o['-s'])) throw new GitError(`Could not find merge strategy '${o['-s']}'.\nAvailable strategies are: octopus ours recursive resolve subtree.`, 2);
   if (o['--abort']) {
     if (repo.state?.type !== 'merge') throw new GitError('fatal: There is no merge to abort (MERGE_HEAD missing).');
     resetHard(repo, headCommit(repo));
@@ -1399,11 +1515,19 @@ commands.merge = (ctx, args) => {
     if (!up) throw new GitError('fatal: No remote for the current branch.');
     o._.push(`${up.remote}/${up.branch}`);
   }
-  return mergeInto(ctx, o._[0], { noFF: o['--no-ff'], ffOnly: o['--ff-only'], squash: o['--squash'], message: o['-m'], noCommit: o['--no-commit'] });
+  return mergeInto(ctx, o._[0], { noFF: o['--no-ff'], ffOnly: o['--ff-only'], squash: o['--squash'], message: o['-m'], noCommit: o['--no-commit'], favor, strategy: o['-s'] === 'ours' ? 'ours' : null });
 };
 
+// -X ours / -X theirs (other strategy options are accepted and ignored, as most only tune diffs)
+function strategyOption(x) {
+  if (!x) return null;
+  if (x === 'ours' || x === 'theirs') return x;
+  if (['patience', 'histogram', 'ignore-space-change', 'ignore-all-space', 'ignore-space-at-eol', 'renormalize', 'no-renormalize', 'diff-algorithm=histogram', 'diff-algorithm=patience'].includes(x)) return null;
+  throw new GitError(`fatal: unknown option for merge-recursive: -X${x}`, 128);
+}
+
 // Pick the changes of `hash` onto HEAD. Returns {ok, conflicts, empty}.
-function pickOnto(repo, hash, { revert = false, label } = {}) {
+function pickOnto(repo, hash, { revert = false, label, favor = null } = {}) {
   const w = repo.world;
   const c = w.commit(hash);
   const parent = c.parents[0] || null;
@@ -1411,7 +1535,7 @@ function pickOnto(repo, hash, { revert = false, label } = {}) {
   const oursFlat = commitTreeFlat(repo, head);
   const baseFlat = revert ? commitTreeFlat(repo, hash) : commitTreeFlat(repo, parent);
   const theirsFlat = revert ? commitTreeFlat(repo, parent) : commitTreeFlat(repo, hash);
-  const merge = mergeTrees(w, baseFlat, oursFlat, theirsFlat, { ours: 'HEAD', theirs: label || `${shortHash(hash)} (${firstLine(c.message)})` });
+  const merge = mergeTrees(w, baseFlat, oursFlat, theirsFlat, { ours: 'HEAD', theirs: label || `${shortHash(hash)} (${firstLine(c.message)})`, favor });
   applyMerge(repo, oursFlat, merge);
   const empty = !merge.conflicts.length && w.writeTree(merge.result) === w.commit(head).tree;
   return { merge, empty, conflicts: merge.conflicts };
@@ -1428,7 +1552,10 @@ function rebaseFinish(ctx) {
   }
   repo.state = null;
   ctx.out.push(`Successfully rebased and updated ${s.headName || 'detached HEAD'}.`);
-  ctx.world.emit({ type: 'rebase-done' });
+  const moved = Object.entries(s.updates || {});
+  for (const [ref, hh] of moved) updateRef(repo, ref, hh, `rebase (update-ref): ${ref}`);
+  if (moved.length) ctx.out.push('Updated the following refs with --update-refs:', ...moved.map(([ref]) => '\t' + ref));
+  ctx.world.emit({ type: 'rebase-done', updated: moved.map(([ref]) => ref) });
   return 0;
 }
 
@@ -1440,6 +1567,7 @@ function runSequencer(ctx) {
     const step = s.todo.shift();
     s.current = step;
     if (step.action === 'drop') continue;
+    if (step.action === 'update-ref') { (s.updates = s.updates || {})[step.ref] = headCommit(repo); continue; }
     if (step.action === 'exec') {
       ctx.out.push(`Executing: ${step.cmd}`);
       const code = ctx.runShell ? ctx.runShell(step.cmd, ctx.out) : 0;
@@ -1453,7 +1581,7 @@ function runSequencer(ctx) {
     if (step.action === 'break') { ctx.out.push('Stopped at HEAD', `You can amend the commit now, with`, '', `  git commit --amend`, '', `Once you are satisfied with your changes, run`, '', `  git rebase --continue`); s.stopped = 'edit'; return 0; }
     const c = w.commit(step.hash);
     if (c.parents.length > 1) continue; // merges are dropped by plain rebase
-    const res = pickOnto(repo, step.hash);
+    const res = pickOnto(repo, step.hash, { favor: s.favor });
     if (res.conflicts.length) {
       ctx.out.push(...conflictLines(res.merge));
       ctx.out.push(`error: could not apply ${shortHash(step.hash)}... ${firstLine(c.message)}`,
@@ -1541,7 +1669,7 @@ function todoList(w, commits) {
 
 commands.rebase = (ctx, args) => {
   const repo = needWorkTree(ctx);
-  const o = parseOpts(args, { bool: ['-i', '--interactive', '--continue', '--abort', '--skip', '--root', '--autosquash', '-q', '--edit-todo', '-f', '--force-rebase', '--no-ff'], val: ['--onto', '--exec', '-x'] });
+  const o = parseOpts(args, { bool: ['-i', '--interactive', '--continue', '--abort', '--skip', '--root', '--autosquash', '-q', '--edit-todo', '-f', '--force-rebase', '--no-ff', '--update-refs', '--no-update-refs'], val: ['--onto', '--exec', '-x', '-X'], alias: { '--strategy-option': '-X' } });
   const forceRebase = o['-f'] || o['--force-rebase'] || o['--no-ff'];
   const execCmd = o['--exec'] || o['-x'];
   const w = ctx.world;
@@ -1628,10 +1756,30 @@ commands.rebase = (ctx, args) => {
     }
     return runSequencer(ctx);
   };
-  const baseState = { type: 'rebase', headName, onto, origHead: head, interactive, todo: [], current: null };
+  const baseState = { type: 'rebase', headName, onto, origHead: head, interactive, todo: [], current: null, favor: strategyOption(o['-X']), updates: {} };
+  // --update-refs (or rebase.updateRefs): other local branches pointing into the rewritten
+  // range move with it, so a stack of branches stays stacked
+  const cfgUpdate = String(configGet(repo, 'rebase.updaterefs') ?? configGet(repo, 'rebase.updateRefs') ?? '').toLowerCase() === 'true';
+  const updateRefs = o['--update-refs'] || (cfgUpdate && !o['--no-update-refs']);
+  const busy = new Set([headName, ...[...w.repos.values()].filter(r => r !== repo && r.refs === repo.refs).map(r => headRef(r))].filter(Boolean));
+  const withRefs = todo => {
+    if (!updateRefs) return todo;
+    const at = new Map();
+    for (const [ref, hh] of Object.entries(repo.refs)) if (ref.startsWith('refs/heads/') && !busy.has(ref)) { if (!at.has(hh)) at.set(hh, []); at.get(hh).push(ref); }
+    // a branch's update-ref goes after its commit and any fixups squashed into it
+    const outTodo = [];
+    let pending = [];
+    for (const t of todo) {
+      if (pending.length && !/^(fixup|squash)$/.test(t.action) && t.action !== 'exec') { outTodo.push(...pending); pending = []; }
+      outTodo.push(t);
+      if (t.hash && at.get(t.hash) && !/^(fixup|squash)$/.test(t.action)) pending.push(...at.get(t.hash).map(ref => ({ action: 'update-ref', ref })));
+    }
+    outTodo.push(...pending);
+    return outTodo;
+  };
   if (o['--root']) commits = revList(w, [head], []).reverse();
   const withExec = todo => (execCmd ? todo.flatMap(t => [t, { action: 'exec', cmd: execCmd }]) : todo);
-  if (!interactive) return start({ ...baseState, todo: withExec(todoList(w, commits)) });
+  if (!interactive) return start({ ...baseState, todo: withRefs(withExec(todoList(w, commits))) });
   let todo = todoList(w, commits);
   if (o['--autosquash']) {
     const out = [];
@@ -1642,8 +1790,8 @@ commands.rebase = (ctx, args) => {
     }
     todo = out;
   }
-  todo = withExec(todo);
-  const text = todo.map(t => (t.action === 'exec' ? `exec ${t.cmd}` : `${t.action} ${shortHash(t.hash)} ${t.msg}`)).join('\n') + `\n
+  todo = withRefs(withExec(todo));
+  const text = todo.map(t => (t.action === 'exec' ? `exec ${t.cmd}` : t.action === 'update-ref' ? `update-ref ${t.ref}\n` : `${t.action} ${shortHash(t.hash)} ${t.msg}`)).join('\n') + `\n
 # Rebase ${shortHash(onto)}..${shortHash(head)} onto ${shortHash(onto)} (${pl(todo.length, 'command')})
 #
 # Commands:
@@ -1653,6 +1801,9 @@ commands.rebase = (ctx, args) => {
 # s, squash <commit> = use commit, but meld into previous commit
 # f, fixup <commit> = like "squash" but keep only the previous commit's log message
 # d, drop <commit> = remove commit
+# u, update-ref <ref> = track a placeholder for the <ref> to be updated
+#                       to this position in the new commits. The <ref> is
+#                       updated at the end of the rebase
 #
 # These lines can be re-ordered; they are executed from top to bottom.
 # If you remove a line here THAT COMMIT WILL BE LOST.
@@ -1667,6 +1818,8 @@ commands.rebase = (ctx, args) => {
       for (const line of saved.split('\n')) {
         const l = line.trim();
         if (!l || l.startsWith('#')) continue;
+        const u = l.match(/^(?:u|update-ref)\s+(\S+)$/);
+        if (u) { steps.push({ action: 'update-ref', ref: u[1].startsWith('refs/') ? u[1] : 'refs/heads/' + u[1] }); continue; }
         const m = l.match(/^(\w+)\s+([0-9a-f]{4,40})?\s*(.*)$/);
         if (!m) { c2.out.push(`error: invalid line: ${l}`); return 1; }
         const action = abbrev[m[1]] || m[1];
@@ -1694,7 +1847,7 @@ function isCleanIndex(repo) {
 function pickCommand(kind) {
   return (ctx, args) => {
     const repo = needWorkTree(ctx);
-    const o = parseOpts(args, { bool: ['--continue', '--abort', '--skip', '--no-edit', '-n', '--no-commit', '-x', '-e'], val: ['-m'] });
+    const o = parseOpts(args, { bool: ['--continue', '--abort', '--skip', '--no-edit', '-n', '--no-commit', '-x', '-e'], val: ['-m', '-X'], alias: { '--strategy-option': '-X' } });
     const w = ctx.world;
     if (o['--abort']) {
       if (repo.state?.type !== kind) throw new GitError(`error: no ${kind} in progress\nfatal: ${kind} failed`);
@@ -1726,7 +1879,7 @@ function pickCommand(kind) {
       const hash = targets[i];
       const c = w.commit(hash);
       if (c.parents.length > 1 && !o['-m']) throw new GitError(`error: commit ${hash} is a merge but no -m option was given.\nfatal: ${kind} failed`);
-      const res = pickOnto(repo, hash, { revert: kind === 'revert' });
+      const res = pickOnto(repo, hash, { revert: kind === 'revert', favor: strategyOption(o['-X']) });
       const msg = kind === 'revert'
         ? `Revert "${firstLine(c.message)}"\n\nThis reverts commit ${hash}.`
         : c.message + (o['-x'] ? `\n\n(cherry picked from commit ${hash})` : '');
@@ -1963,7 +2116,9 @@ commands.reflog = (ctx, args) => {
 
 commands.blame = (ctx, args) => {
   const repo = needRepo(ctx);
-  const o = parseOpts(args, { bool: ['-s', '-e', '-w'], val: ['-L'] });
+  const o = parseOpts(args, { bool: ['-s', '-e', '-w', '--no-ignore-revs'], val: ['-L', '--ignore-rev', '--ignore-revs-file'] });
+  const ignoreArgs = args.flatMap((a, i) => (a === '--ignore-rev' ? [args[i + 1]] : a.startsWith('--ignore-rev=') ? [a.slice(13)] : []));
+  const revsFiles = args.flatMap((a, i) => (a === '--ignore-revs-file' ? [args[i + 1]] : a.startsWith('--ignore-revs-file=') ? [a.slice(19)] : []));
   const w = ctx.world;
   const file = o._.length === 2 ? o._[1] : (o._[0] || (o.paths || [])[0]);
   const rev = o._.length === 2 ? o._[0] : 'HEAD';
@@ -1972,6 +2127,17 @@ commands.blame = (ctx, args) => {
   const head = resolveCommit(repo, rev);
   if (!commitTreeFlat(repo, head).has(rel)) throw new GitError(`fatal: no such path '${rel}' in ${rev}`);
   const chain = revList(w, [head], [], { firstParent: true }).reverse();
+  const norm = o['-w'] ? (l => l.replace(/\s+/g, '')) : (l => l);
+  // commits to look through: --ignore-rev, --ignore-revs-file and blame.ignoreRevsFile
+  const ignored = new Set();
+  const cfgFile = o['--no-ignore-revs'] ? null : configGet(repo, 'blame.ignoreRevsFile');
+  for (const f of [...(cfgFile && !revsFiles.length ? [cfgFile] : []), ...revsFiles]) {
+    const abs = normPath(f.startsWith('/') ? f : (f === cfgFile ? repo.root : ctx.cwd) + '/' + f);
+    if (!w.files.has(abs)) { if (f === cfgFile) throw new GitError(`fatal: could not open object name list: ${f}`); throw new GitError(`fatal: could not open object name list: ${f}`); }
+    for (const line of w.files.get(abs).split('\n')) { const t = line.replace(/#.*$/, '').trim(); if (t) { const hh = resolve(repo, t, { quiet: true }); if (hh) ignored.add(hh); } }
+  }
+  for (const r of ignoreArgs) ignored.add(resolveCommit(repo, r));
+  const mm = mailmapFor(repo);
   let lines = [], owners = [];
   let prevText = null;
   for (const h of chain) {
@@ -1980,12 +2146,20 @@ commands.blame = (ctx, args) => {
     if (text === prevText) continue;
     if (text === null) { lines = []; owners = []; prevText = null; continue; }
     const nl = splitLines(text);
-    const ops = diffLines(lines, nl);
+    const ops = diffLines(lines.map(norm), nl.map(norm));
     const nOwners = [];
+    // an ignored commit (say, a mass reformat) hands each changed line back to whoever
+    // owned the line it replaced, matching lines within each hunk in order
+    let hunk = [];
+    const flush = () => {
+      const dels = hunk.filter(x => x.op === '-').map(x => owners[x.a]);
+      for (const x of hunk.filter(y => y.op === '+')) nOwners[x.b] = (ignored.has(h) && dels.length) ? dels.shift() : h;
+      hunk = [];
+    };
     for (const op of ops) {
-      if (op.op === '=') nOwners[op.b] = owners[op.a];
-      else if (op.op === '+') nOwners[op.b] = h;
+      if (op.op === '=') { flush(); nOwners[op.b] = owners[op.a]; } else hunk.push(op);
     }
+    flush();
     lines = nl; owners = nOwners; prevText = text;
   }
   let from = 1, to = lines.length;
@@ -1993,7 +2167,8 @@ commands.blame = (ctx, args) => {
   const width = String(lines.length).length;
   for (let i = from - 1; i < to && i < lines.length; i++) {
     const c = w.commit(owners[i]);
-    const who = o['-e'] ? `<${c.author.email}>` : c.author.name;
+    const a = mm(c.author);
+    const who = o['-e'] ? `<${a.email}>` : a.name;
     ctx.out.push(o['-s']
       ? `${C.yellow(shortHash(owners[i]))} ${String(i + 1).padStart(width)}) ${lines[i]}`
       : `${C.yellow(shortHash(owners[i]))} (${who.padEnd(12)} ${isoDate(c.author.time)} ${String(i + 1).padStart(width)}) ${lines[i]}`);
@@ -2092,11 +2267,14 @@ commands.clean = (ctx, args) => {
 
 commands.shortlog = (ctx, args) => {
   const repo = needRepo(ctx);
-  const o = parseOpts(args, { bool: ['-s', '-n', '-sn', '-ns', '-e'], val: [] });
+  const o = parseOpts(args, { bool: ['-s', '-n', '-sn', '-ns', '-e', '-sne', '-nse', '-esn', '-sen', '--no-mailmap'], val: [] });
   const w = ctx.world;
-  const list = revList(w, [headCommit(repo)]);
+  const e = o['-e'] || o['-sne'] || o['-nse'] || o['-esn'] || o['-sen'];
+  if (o['-sne'] || o['-nse'] || o['-esn'] || o['-sen']) { o['-s'] = true; o['-n'] = true; }
+  const list = o._.length ? revList(w, o._.map(r => resolveCommit(repo, r))) : revList(w, [headCommit(repo)]);
+  const mm = o['--no-mailmap'] ? (x => x) : mailmapFor(repo);
   const by = new Map();
-  for (const h of list) { const a = w.commit(h).author.name; if (!by.has(a)) by.set(a, []); by.get(a).push(firstLine(w.commit(h).message)); }
+  for (const h of list) { const id = mm(w.commit(h).author); const a = e ? `${id.name} <${id.email}>` : id.name; if (!by.has(a)) by.set(a, []); by.get(a).push(firstLine(w.commit(h).message)); }
   let entries = [...by];
   if (o['-n'] || o['-sn'] || o['-ns']) entries.sort((a, b) => b[1].length - a[1].length);
   for (const [a, msgs] of entries) {

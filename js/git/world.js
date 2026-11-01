@@ -253,6 +253,8 @@ export class World {
 
   // ---------- GitHub ----------
   canonicalUrl(url) {
+    // a local path registered as a remote (a bundle file)
+    if (this.remotes.get(url)?.meta?.bundle) return { url, owner: 'local', name: url.split('/').pop().replace(/\.(bundle|git)$/, ''), ssh: false, local: true };
     let m = url.match(/^git@github\.com:([^/]+)\/(.+?)(\.git)?$/);
     if (m) return { url: `https://github.com/${m[1]}/${m[2]}.git`, owner: m[1], name: m[2], ssh: true };
     m = url.match(/^(?:https?:\/\/)?github\.com\/([^/]+)\/(.+?)(\.git)?\/?$/);

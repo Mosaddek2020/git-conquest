@@ -27,28 +27,79 @@ export function parseWorkflow(text) {
     if (!j || typeof j !== 'object') { wf.errors.push(`job '${id}' is empty`); continue; }
     const env = j.environment;
     const job = {
-      id, name: j.name ? String(j.name) : id, runsOn: j['runs-on'] || null,
+      id, baseId: id, name: j.name ? String(j.name) : id, runsOn: j['runs-on'] || null,
       needs: j.needs ? [].concat(j.needs).map(String) : [],
       if: j.if != null ? String(j.if) : null,
       environment: typeof env === 'string' ? { name: env } : env && typeof env === 'object' ? { name: env.name, url: env.url } : null,
       env: j.env && typeof j.env === 'object' ? j.env : {},
       steps: [],
+      // a job can call a reusable workflow instead of running steps
+      uses: j.uses != null ? String(j.uses) : null,
+      with: j.with && typeof j.with === 'object' ? j.with : {},
+      secrets: j.secrets ?? null,
+      matrix: null, failFast: j.strategy?.['fail-fast'] !== false,
     };
+    if (job.uses) { wf.jobs.push(job); continue; }
     if (j.steps != null && !Array.isArray(j.steps)) wf.errors.push(`job '${id}': 'steps' must be a list (each step starts with "- ")`);
     for (const s of Array.isArray(j.steps) ? j.steps : []) {
       if (!s || typeof s !== 'object') { wf.errors.push(`job '${id}': each step must be a mapping like "- run: npm test"`); continue; }
       if (s.run == null && s.uses == null) wf.errors.push(`job '${id}': a step needs either 'run:' or 'uses:'`);
       job.steps.push({ name: s.name != null ? String(s.name) : null, uses: s.uses != null ? String(s.uses) : null, run: s.run != null ? String(s.run) : null, env: s.env && typeof s.env === 'object' ? s.env : {}, if: s.if != null ? String(s.if) : null, with: s.with || {} });
     }
-    wf.jobs.push(job);
+    const m = j.strategy?.matrix;
+    if (m && typeof m === 'object') {
+      const combos = expandMatrix(m);
+      if (!combos.length) wf.errors.push(`job '${id}': the matrix has no combinations`);
+      for (const combo of combos) wf.jobs.push({ ...job, id: `${id} (${Object.values(combo).join(', ')})`, matrix: combo });
+    } else wf.jobs.push(job);
   }
   if (!wf.jobs.length) wf.errors.push("missing 'jobs:'");
   for (const j of wf.jobs) {
-    if (!j.runsOn) wf.errors.push(`job '${j.id}' is missing 'runs-on'`);
-    if (!j.steps.length) wf.errors.push(`job '${j.id}' has no steps`);
-    for (const n of j.needs) if (!wf.jobs.some(x => x.id === n)) wf.errors.push(`job '${j.id}' needs unknown job '${n}'`);
+    if (j.uses) { if (!/^\.\/\.github\/workflows\/[^/]+\.ya?ml$/.test(j.uses) && !/^[\w.-]+\/[\w.-]+\/\.github\/workflows\/[^/@]+\.ya?ml@[\w./-]+$/.test(j.uses)) wf.errors.push(`job '${j.id}': 'uses' must be ./.github/workflows/<file>.yml or owner/repo/.github/workflows/<file>.yml@<ref>`); }
+    else {
+      if (!j.runsOn) wf.errors.push(`job '${j.id}' is missing 'runs-on'`);
+      if (!j.steps.length) wf.errors.push(`job '${j.id}' has no steps`);
+    }
+    for (const n of j.needs) if (!wf.jobs.some(x => x.baseId === n)) wf.errors.push(`job '${j.id}' needs unknown job '${n}'`);
   }
   return wf;
+}
+
+// strategy.matrix: every combination of the listed values, minus `exclude`, plus `include`
+export function expandMatrix(m) {
+  const keys = Object.keys(m).filter(k => k !== 'include' && k !== 'exclude');
+  let combos = [{}];
+  for (const k of keys) {
+    const vals = Array.isArray(m[k]) ? m[k] : [m[k]];
+    combos = combos.flatMap(c => vals.map(v => ({ ...c, [k]: v })));
+  }
+  if (!keys.length) combos = [];
+  const matches = (c, pat) => Object.entries(pat || {}).every(([k, v]) => String(c[k]) === String(v));
+  for (const ex of [].concat(m.exclude || [])) combos = combos.filter(c => !matches(c, ex));
+  for (const inc of [].concat(m.include || [])) {
+    const base = Object.fromEntries(Object.entries(inc).filter(([k]) => keys.includes(k)));
+    const hit = combos.filter(c => Object.keys(base).length && matches(c, base));
+    if (hit.length) for (const c of hit) Object.assign(c, inc); else combos.push({ ...inc });
+  }
+  return combos;
+}
+
+// the workflow a `uses:` job calls, read from this commit or from another repository
+function calledWorkflow(world, bare, flat, def) {
+  let text = null, where = def.uses;
+  const local = def.uses.match(/^\.\/(\.github\/workflows\/[^/]+\.ya?ml)$/);
+  if (local) { const h = flat.get(local[1]); text = h ? world.objects.get(h).content : null; }
+  else {
+    const m = def.uses.match(/^([\w.-]+)\/([\w.-]+)\/(\.github\/workflows\/[^/@]+\.ya?ml)@(.+)$/);
+    const other = m && world.remotes.get(`https://github.com/${m[1]}/${m[2]}.git`);
+    const ref = other && (other.refs['refs/heads/' + m[4]] || other.refs['refs/tags/' + m[4]]);
+    if (ref) { const f = world.readTreeFlat(world.commit(world.peel(ref)).tree); const h = f.get(m[3]); text = h ? world.objects.get(h).content : null; }
+  }
+  if (text === null) return { error: `error parsing called workflow "${where}": failed to fetch workflow: workflow was not found.` };
+  const wf = parseWorkflow(text);
+  if (wf.errors.length) return { error: `error parsing called workflow "${where}": ${wf.errors[0]}` };
+  if (!wf.on.includes('workflow_call')) return { error: `error parsing called workflow "${where}": workflow is not reusable as it is missing a \`on.workflow_call\` trigger` };
+  return { wf, spec: wf.triggers.workflow_call || {} };
 }
 
 // ---------- expressions: ${{ ... }} ----------
@@ -225,7 +276,7 @@ export function simulateRun(cmd, flat, world, ctx = {}) {
   const files = [...flat].map(([p, h]) => [p, world.objects.get(h).content]);
   const env = ctx.env || {};
   if (/npm (run )?test|npm t\b|pytest|go test|cargo test/.test(cmd) && world.testRule) {
-    const r = world.testRule(Object.fromEntries(files));
+    const r = world.testRule(Object.fromEntries(files), { matrix: ctx.matrix || null, env });
     return r.ok ? { ok: true, log: r.log || ['PASS all suites'] } : { ok: false, log: r.log || ['FAIL'] };
   }
   if (/npm (run )?test|npm t\b|pytest|go test|cargo test/.test(cmd)) {
@@ -290,7 +341,11 @@ function ctxFor(bare, run) {
   };
 }
 
+// called on every branch push (Dependabot rescans manifests here)
+export const pushHooks = [];
+
 export function runWorkflows(world, bare, event, ref, hash, pr = null, { refType = 'branch', only = null, inputs = null, actor } = {}) {
+  if (event === 'push' && refType === 'branch') for (const fn of pushHooks) fn(world, bare, ref, hash);
   const flat = world.readTreeFlat(world.commit(hash).tree);
   const wfs = [...flat.keys()].filter(p => /^\.github\/workflows\/[^/]+\.ya?ml$/.test(p) && (!only || p === only));
   const base = pr != null ? bare.meta.prs.find(x => x.number === pr)?.base : null;
@@ -326,13 +381,13 @@ export function executeRun(world, bare, run) {
     progress = false;
     for (const job of run.jobs) {
       if (job.status !== 'queued') continue;
-      const deps = job.def.needs.map(n => run.jobs.find(j => j.id === n));
+      const deps = job.def.needs.flatMap(n => run.jobs.filter(j => j.def.baseId === n));
       if (deps.some(d => d.status !== 'completed')) continue;
       const depsFailed = deps.some(d => d.conclusion === 'failure');
       const depsSkipped = deps.some(d => d.conclusion === 'skipped');
       let cond;
       try {
-        cond = job.def.if ? truthy(evalExpr(job.def.if, { ...base, __status: depsFailed ? 'failure' : 'success', needs: Object.fromEntries(deps.map(d => [d.id, { result: d.conclusion }])) })) && (/always\(\)|failure\(\)/.test(job.def.if) || (!depsFailed && !depsSkipped)) : (!depsFailed && !depsSkipped);
+        cond = job.def.if ? truthy(evalExpr(job.def.if, { ...base, __status: depsFailed ? 'failure' : 'success', needs: Object.fromEntries(job.def.needs.map(n => { const ds = deps.filter(d => d.def.baseId === n); return [n, { result: ds.some(d => d.conclusion === 'failure') ? 'failure' : ds.every(d => d.conclusion === 'skipped') ? 'skipped' : 'success' }]; })) })) && (/always\(\)|failure\(\)/.test(job.def.if) || (!depsFailed && !depsSkipped)) : (!depsFailed && !depsSkipped);
       } catch (e) {
         job.status = 'completed'; job.conclusion = 'failure'; job.log = [`Error evaluating 'if': ${e.message}`]; progress = true; continue;
       }
@@ -342,9 +397,12 @@ export function executeRun(world, bare, run) {
         job.log = [depsFailed ? `Skipped: a job it needs failed (${deps.filter(d => d.conclusion === 'failure').map(d => d.id).join(', ')})` : depsSkipped ? 'Skipped: a job it needs was skipped' : `Skipped: if: ${job.def.if} was false`];
         continue;
       }
-      if (job.def.environment?.name) {
+      let jobEnv = job.def.environment;
+      if (job.def.uses && !jobEnv) { const cw = calledWorkflow(world, bare, flat, job.def); jobEnv = cw.wf?.jobs.find(x => x.environment)?.environment || null; }
+      if (jobEnv?.name) {
         let envName, url;
-        try { envName = interpolate(job.def.environment.name, base); url = job.def.environment.url ? interpolate(job.def.environment.url, base) : null; } catch { envName = job.def.environment.name; }
+        const ectx = { ...base, inputs: job.def.uses ? callInputs(job.def, base, calledWorkflow(world, bare, flat, job.def).spec) : base.inputs };
+        try { envName = interpolate(jobEnv.name, ectx); url = jobEnv.url ? interpolate(jobEnv.url, ectx) : null; } catch { envName = jobEnv.name; }
         job.envName = envName;
         const envCfg = ensureEnvironment(bare, envName, url);
         if (envCfg.branches && !(run.refType === 'tag' ? anyGlob(envCfg.tags || [], run.branch) : anyGlob(envCfg.branches, run.branch))) {
@@ -360,48 +418,101 @@ export function executeRun(world, bare, run) {
         }
       }
       runJob(world, bare, run, job, flat, base);
+      // fail-fast: one failed matrix job cancels its siblings that have not started
+      if (job.conclusion === 'failure' && job.def.matrix && job.def.failFast) {
+        for (const sib of run.jobs) if (sib !== job && sib.def.baseId === job.def.baseId && sib.status === 'queued') Object.assign(sib, { status: 'completed', conclusion: 'cancelled', ok: false, log: [`Cancelled: ${job.id} failed and fail-fast is on`] });
+      }
     }
   }
   const waiting = run.jobs.some(j => j.status === 'waiting');
   if (waiting) { run.status = 'waiting'; run.conclusion = null; }
   else if (run.jobs.every(j => j.status === 'completed')) {
     run.status = 'completed';
-    run.conclusion = run.jobs.some(j => j.conclusion === 'failure') ? 'failure' : 'success';
+    run.conclusion = run.jobs.some(j => j.conclusion === 'failure' || j.conclusion === 'cancelled') ? 'failure' : 'success';
   }
   delete run.wfCache;
   world.emit({ type: 'workflow-run', url: bare.meta.url, run });
 }
 
+function callInputs(def, base, spec) {
+  const inputs = {};
+  for (const [k, v] of Object.entries(spec?.inputs || {})) if (v && v.default !== undefined) inputs[k] = v.default;
+  for (const [k, v] of Object.entries(def.with || {})) inputs[k] = typeof v === 'string' ? interpolate(v, base) : v;
+  return inputs;
+}
+
 function runJob(world, bare, run, job, flat, base) {
   const def = job.def;
-  job.log = [`Runner: ${def.runsOn}`];
+  if (def.uses) return runCalled(world, bare, run, job, flat, base);
+  if (def.matrix) base = { ...base, matrix: def.matrix };
+  let runner = def.runsOn;
+  try { runner = interpolate(String(def.runsOn), base); } catch { /* keep as written */ }
+  job.log = [`Runner: ${runner}`];
+  if (def.matrix) job.log.push(`Matrix: ${Object.entries(def.matrix).map(([k, v]) => `${k}=${v}`).join(', ')}`);
   if (job.approval) job.log.push(`Deployment to ${job.envName} approved by ${job.approval.by}`);
+  const ok = runSteps(world, bare, run, job, def, flat, base, job.log);
+  job.status = 'completed';
+  job.conclusion = ok ? 'success' : 'failure';
+  job.ok = ok;
+}
+
+// a job that calls a reusable workflow runs each of the called workflow's jobs in turn
+function runCalled(world, bare, run, job, flat, base) {
+  const def = job.def;
+  job.log = [`Uses: ${def.uses}`];
+  const cw = calledWorkflow(world, bare, flat, def);
+  const fail = (lines) => { job.log.push(...lines); job.status = 'completed'; job.conclusion = 'failure'; job.ok = false; };
+  if (cw.error) return fail([cw.error]);
+  const inputs = callInputs(def, base, cw.spec);
+  for (const [k, v] of Object.entries(cw.spec.inputs || {})) if (v?.required && inputs[k] === undefined) return fail([`The workflow is not valid. ${def.uses}: Input ${k} is required, but not provided while calling.`]);
+  for (const k of Object.keys(def.with || {})) if (!(k in (cw.spec.inputs || {}))) return fail([`The workflow is not valid. ${def.uses}: Invalid input, ${k} is not defined in the referenced workflow.`]);
+  const secrets = def.secrets === 'inherit' ? base.secrets : Object.fromEntries(Object.entries(def.secrets && typeof def.secrets === 'object' ? def.secrets : {}).map(([k, v]) => [k, interpolate(String(v), base)]));
+  for (const [k, v] of Object.entries(cw.spec.secrets || {})) if (v?.required && secrets[k] === undefined) return fail([`The workflow is not valid. ${def.uses}: Secret ${k} is required, but not provided while calling.`]);
+  const cbase = { ...base, inputs, secrets };
+  if (job.approval) job.log.push(`Deployment to ${job.envName} approved by ${job.approval.by}`);
+  let ok = true;
+  for (const cj of cw.wf.jobs) {
+    if (!ok) { job.log.push(`${cj.id}: skipped`); continue; }
+    let runner = cj.runsOn; try { runner = interpolate(String(cj.runsOn), cbase); } catch { /* as written */ }
+    job.log.push(`── ${def.baseId} / ${cj.name} (runner: ${runner})`);
+    const jc = { ...job, envName: cj.environment ? job.envName : null };
+    ok = runSteps(world, bare, run, jc, { ...cj, environment: cj.environment }, cw.wfFlat || flat, cbase, job.log, cw.wf);
+  }
+  job.status = 'completed';
+  job.conclusion = ok ? 'success' : 'failure';
+  job.ok = ok;
+}
+
+function runSteps(world, bare, run, job, def, flat, base, log, wfDef = run.wf) {
   let ok = true;
   for (const s of def.steps) {
     const label = s.name || (s.uses ? `Run ${s.uses}` : `Run ${s.run.split('\n')[0]}`);
     if (s.if) {
       let c;
-      try { c = truthy(evalExpr(s.if, { ...base, __status: ok ? 'success' : 'failure' })); } catch (e) { job.log.push(`${label}: error in if: ${e.message}`); ok = false; break; }
-      if (!c) { job.log.push(`${label} (skipped)`); continue; }
+      try { c = truthy(evalExpr(s.if, { ...base, __status: ok ? 'success' : 'failure' })); } catch (e) { log.push(`${label}: error in if: ${e.message}`); ok = false; break; }
+      if (!c) { log.push(`${label} (skipped)`); continue; }
     } else if (!ok) break;
-    if (s.uses) { job.log.push(`Run ${s.uses}`); continue; }
+    if (s.uses) {
+      let w = s.with || {};
+      try { w = Object.fromEntries(Object.entries(w).map(([k, v]) => [k, interpolate(String(v), base)])); } catch { /* as written */ }
+      log.push(`Run ${s.uses}${Object.keys(w).length ? ` (${Object.entries(w).map(([k, v]) => `${k}: ${v}`).join(', ')})` : ''}`);
+      continue;
+    }
     let env;
     try {
       env = {};
-      for (const src of [run.wf.env, def.env, s.env]) for (const [k, v] of Object.entries(src || {})) env[k] = interpolate(v ?? '', base);
-    } catch (e) { job.log.push(`${label}: ${e.message}`); ok = false; break; }
-    if (s.name) job.log.push(s.name);
+      for (const src of [wfDef?.env, def.env, s.env]) for (const [k, v] of Object.entries(src || {})) env[k] = interpolate(v ?? '', base);
+    } catch (e) { log.push(`${label}: ${e.message}`); ok = false; break; }
+    if (s.name) log.push(s.name);
     for (const line of s.run.split('\n').map(l => l.trim()).filter(Boolean)) {
       let cmd;
-      try { cmd = interpolate(line, base); } catch (e) { job.log.push(`Error in expression: ${e.message}`); ok = false; break; }
-      const r = simulateRun(cmd, flat, world, { env, bare, run, job: { ...def, environment: job.envName ? { name: job.envName } : null } });
-      job.log.push(`$ ${line}`, ...r.log.map(l => '  ' + l));
+      try { cmd = interpolate(line, base); } catch (e) { log.push(`Error in expression: ${e.message}`); ok = false; break; }
+      const r = simulateRun(cmd, flat, world, { env, bare, run, matrix: base.matrix || null, job: { ...def, environment: job.envName ? { name: job.envName } : null } });
+      log.push(`$ ${line}`, ...r.log.map(l => '  ' + l));
       if (!r.ok) { ok = false; break; }
     }
   }
-  job.status = 'completed';
-  job.conclusion = ok ? 'success' : 'failure';
-  job.ok = ok;
+  return ok;
 }
 
 export function approveDeployment(world, bare, runId, { by, approve = true } = {}) {
@@ -423,9 +534,9 @@ export function approveDeployment(world, bare, runId, { by, approve = true } = {
 export function rerun(world, bare, run, { failedOnly = false } = {}) {
   if (!run.wf) throw new Error('This run cannot be re-run because its workflow file is invalid. Fix the file and push again.');
   const reset = new Set();
-  for (const j of run.jobs) if (!failedOnly || j.conclusion === 'failure' || j.conclusion === 'skipped') reset.add(j.id);
+  for (const j of run.jobs) if (!failedOnly || j.conclusion === 'failure' || j.conclusion === 'skipped' || j.conclusion === 'cancelled') reset.add(j.id);
   let grew = true;
-  while (grew) { grew = false; for (const j of run.jobs) if (!reset.has(j.id) && j.def.needs.some(n => reset.has(n))) { reset.add(j.id); grew = true; } }
+  while (grew) { grew = false; for (const j of run.jobs) if (!reset.has(j.id) && j.def.needs.some(n => run.jobs.some(x => x.def.baseId === n && reset.has(x.id)))) { reset.add(j.id); grew = true; } }
   for (const j of run.jobs) if (reset.has(j.id)) Object.assign(j, { status: 'queued', conclusion: null, ok: false, log: [], approval: null });
   run.attempt++;
   run.time = world.time;

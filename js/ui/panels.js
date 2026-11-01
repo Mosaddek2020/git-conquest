@@ -97,7 +97,7 @@ export class GitHubView {
   render(repo, shell) {
     clear(this.el);
     const w = shell.world;
-    const remotes = [...w.remotes.values()];
+    const remotes = [...w.remotes.values()].filter(r => !r.meta?.bundle);
     if (!remotes.length) {
       this.el.append(h('div', { class: 'gh-empty' }, 'No GitHub repositories exist in this world yet. Create one with ', h('code', {}, 'gh repo create'), '.'));
       return;
@@ -170,6 +170,16 @@ export class GitHubView {
           h('span', { class: 'pill ' + (i.state === 'open' ? 'pill-ok' : '') }, i.state === 'open' ? 'Open' : i.closedBy ? `Closed by #${i.closedBy}` : 'Closed')),
           i.labels.length ? h('span', { class: 'meta' }, i.labels.join(', ')) : null)))));
     }
+    // Dependabot alerts
+    const alerts = meta.dependabot?.enabled ? meta.dependabot.alerts : [];
+    if (alerts.length) {
+      const sev = { critical: 'pill-bad', high: 'pill-bad', moderate: 'pill-warn', low: '' };
+      this.el.append(h('section', { class: 'gh-section' }, h('h5', {}, `Security · Dependabot alerts (${alerts.filter(a => a.state === 'open').length} open)`),
+        h('ul', { class: 'gh-list' }, alerts.slice().reverse().map(a => h('li', {}, h('div', { class: 'row' },
+          h('span', {}, h('strong', {}, `#${a.number} `), `${a.pkg}: ${a.summary}`),
+          h('span', { class: 'pill ' + (a.state === 'open' ? sev[a.severity] || '' : 'pill-ok') }, a.state === 'open' ? a.severity : a.state)),
+          h('span', { class: 'meta mono' }, `${a.manifest} · ${a.version} is ${a.range} · fixed in ${a.patched} · ${a.ghsa}${a.dismissedReason ? ' · dismissed: ' + a.dismissedReason.replace(/_/g, ' ') : ''}`))))));
+    }
     // environments
     const envs = Object.values(meta.environments || {});
     if (envs.length) {
@@ -191,7 +201,7 @@ export class GitHubView {
           const waiting = r.jobs.filter(j => j.status === 'waiting');
           return h('li', {},
             h('div', { class: 'row' }, h('span', {}, h('strong', { style: { color: col } }, ic), `${r.workflow} · ${r.event} #${r.id}`), h('span', { class: 'meta mono' }, `${r.branch} ${shortHash(r.hash)}`)),
-            h('span', { class: 'meta' }, r.jobs.map(j => `${j.conclusion === 'success' ? '✓' : j.conclusion === 'failure' ? '✗' : j.conclusion === 'skipped' ? '–' : j.status === 'waiting' ? '◷' : '·'} ${j.id}`).join('  ')),
+            h('span', { class: 'meta' }, r.jobs.map(j => `${j.conclusion === 'success' ? '✓' : j.conclusion === 'failure' ? '✗' : j.conclusion === 'skipped' ? '–' : j.conclusion === 'cancelled' ? '⊘' : j.status === 'waiting' ? '◷' : '·'} ${j.id}`).join('  ')),
             r.conclusion === 'failure' ? h('span', { class: 'meta' }, r.jobs.flatMap(j => j.log).filter(l => /FAIL|error|✕|Invalid|not set|rejected|not allowed/i.test(l)).slice(0, 2).join(' · ')) : null,
             waiting.length ? h('div', { class: 'gh-review' },
               h('span', {}, `Review deployments: ${waiting.map(j => j.envName).join(', ')} is waiting for approval`),
@@ -228,6 +238,7 @@ export class GitHubView {
             : h('span', { class: 'pill pill-ok' }, 'Ready to merge');
     const li = h('li', {},
       h('div', { class: 'row' }, h('span', {}, h('strong', {}, `#${pr.number} `), pr.title), pill),
+      pr.labels?.length ? h('span', { class: 'meta' }, pr.labels.map(l => `[${l}]`).join(' ')) : null,
       h('span', { class: 'meta' }, `${pr.headOwner === bare.meta.owner ? pr.head : pr.headOwner + ':' + pr.head} → ${pr.base} · by ${pr.author}${pr.reviews.length ? ' · ' + pr.reviews.map(r => `${r.author}: ${r.state.toLowerCase().replace('_', ' ')}`).join(', ') : ''}`));
     if (st) {
       const checks = checksFor(bare, st.head);

@@ -105,8 +105,13 @@ export function merge3(baseText, oursText, theirsText, labels = {}) {
     else if (eq(tChunk, bChunk)) result.push(...oChunk);
     else if (eq(oChunk, tChunk)) result.push(...oChunk);
     else {
-      conflict = true;
-      result.push(`<<<<<<< ${oursLabel}`, ...oChunk, '=======', ...tChunk, `>>>>>>> ${theirsLabel}`);
+      // -X ours / -X theirs: a conflicting hunk takes that side; clean hunks still merge
+      if (labels.favor === 'ours') result.push(...oChunk);
+      else if (labels.favor === 'theirs') result.push(...tChunk);
+      else {
+        conflict = true;
+        result.push(`<<<<<<< ${oursLabel}`, ...oChunk, '=======', ...tChunk, `>>>>>>> ${theirsLabel}`);
+      }
     }
   };
 

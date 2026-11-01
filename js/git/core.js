@@ -491,10 +491,138 @@ export function resetHard(repo, hash) {
 // ---------- commits ----------
 
 export function identity(repo) {
-  const g = repo.world.globalConfig;
-  const name = repo.config['user.name'] || g['user.name'];
-  const email = repo.config['user.email'] || g['user.email'];
-  return { name, email };
+  return { name: configGet(repo, 'user.name'), email: configGet(repo, 'user.email') };
+}
+
+// ---------- config: includes and conditional includes ----------
+
+// Parse an INI-style git config file into { 'section.sub.key': value }.
+export function parseConfigFile(text) {
+  const out = {};
+  let section = null;
+  for (const raw of String(text || '').split('\n')) {
+    const line = raw.replace(/\s[#;].*$/, '').trim();
+    if (!line || line.startsWith('#') || line.startsWith(';')) continue;
+    const sec = line.match(/^\[\s*([A-Za-z][\w-]*)(?:\s+"([^"]*)")?\s*\]$/);
+    if (sec) { section = sec[1].toLowerCase() + (sec[2] !== undefined ? '.' + sec[2] : ''); continue; }
+    const kv = line.match(/^([A-Za-z][\w-]*)\s*(?:=\s*(.*))?$/);
+    if (kv && section) out[`${section}.${kv[1]}`] = kv[2] === undefined ? 'true' : kv[2].replace(/^"(.*)"$/, '$1');
+  }
+  return out;
+}
+
+export function writeConfigFile(text, key, value) {
+  const m = key.match(/^([^.]+)\.(?:(.*)\.)?([^.]+)$/);
+  const [sec, sub, name] = [m[1].toLowerCase(), m[2], m[3]];
+  const header = sub !== undefined ? `[${sec} "${sub}"]` : `[${sec}]`;
+  const lines = String(text || '').split('\n').filter((l, i, a) => l !== '' || i < a.length - 1);
+  let at = -1, inSec = false;
+  for (let i = 0; i < lines.length; i++) {
+    const t = lines[i].trim();
+    if (t.startsWith('[')) { inSec = t.replace(/\s+/g, ' ').toLowerCase() === header.toLowerCase(); if (inSec) at = i; continue; }
+    if (inSec && new RegExp(`^${name}\\s*=`, 'i').test(t)) {
+      if (value === null) lines.splice(i, 1); else lines[i] = `\t${name} = ${value}`;
+      return lines.join('\n') + '\n';
+    }
+  }
+  if (value === null) return lines.join('\n') + (lines.length ? '\n' : '');
+  if (at < 0) { lines.push(header); at = lines.length - 1; }
+  let end = at + 1;
+  while (end < lines.length && !lines[end].trim().startsWith('[')) end++;
+  lines.splice(end, 0, `\t${name} = ${value}`);
+  return lines.join('\n') + '\n';
+}
+
+const expandHome = (w, p) => (p.startsWith('~/') ? w.home + p.slice(1) : p.startsWith('~') ? w.home + '/' + p.slice(1) : p);
+const globMatch = (pat, str, ci = false) => {
+  const re = '^' + pat.replace(/[.+^${}()|[\]\\]/g, '\\$&').replace(/\*\*\/?/g, '\u0000').replace(/\*/g, '[^/]*').replace(/\?/g, '[^/]').replace(/\u0000/g, '.*') + '$';
+  return new RegExp(re, ci ? 'i' : '').test(str);
+};
+
+// Does an [includeIf "<cond>"] condition hold for this repository?
+export function includeIfMatches(repo, cond) {
+  const w = repo.world;
+  let m = cond.match(/^gitdir(\/i)?:(.+)$/);
+  if (m) {
+    if (!repo.root) return false;
+    let pat = expandHome(w, m[2]);
+    if (!pat.startsWith('/')) pat = '**/' + pat;
+    if (pat.endsWith('/')) pat += '**';
+    return globMatch(pat, repo.root + '/.git', !!m[1]) || globMatch(pat, repo.root, !!m[1]);
+  }
+  m = cond.match(/^onbranch:(.+)$/);
+  if (m) { const b = currentBranch(repo); let pat = m[1]; if (pat.endsWith('/')) pat += '**'; return !!b && globMatch(pat, b); }
+  m = cond.match(/^hasconfig:remote\.\*\.url:(.+)$/);
+  if (m) return Object.entries(repo.config).some(([k, v]) => /^remote\..*\.url$/.test(k) && globMatch(m[1], v));
+  return false;
+}
+
+// Config layers in the order git reads them, last one wins: global, its includes, local.
+export function configLayers(repo) {
+  const w = repo?.world;
+  if (!w) return [];
+  const layers = [{ origin: 'file:~/.gitconfig', values: w.globalConfig }];
+  for (const [k, v] of Object.entries(w.globalConfig)) {
+    let m = k.match(/^include\.path$/i);
+    const cond = !m && k.match(/^includeif\.(.+)\.path$/i);
+    if (!m && !cond) continue;
+    if (cond && !(repo.config && includeIfMatches(repo, cond[1]))) continue;
+    const file = expandHome(w, v);
+    if (w.files.has(file)) layers.push({ origin: 'file:' + v, values: parseConfigFile(w.files.get(file)) });
+  }
+  if (repo.config) layers.push({ origin: 'file:.git/config', values: repo.config });
+  return layers;
+}
+
+const keyEq = (a, b) => { const [sa, ...ra] = a.split('.'); const [sb, ...rb] = b.split('.'); const na = ra.pop(), nb = rb.pop(); return sa.toLowerCase() === sb.toLowerCase() && ra.join('.') === rb.join('.') && na.toLowerCase() === nb.toLowerCase(); };
+
+export function configGet(repo, key) {
+  if (!repo) return undefined;
+  let v;
+  for (const l of configLayers(repo)) for (const [k, val] of Object.entries(l.values)) if (keyEq(k, key)) v = val;
+  return v;
+}
+
+export function configOrigin(repo, key) {
+  let o = null;
+  for (const l of configLayers(repo)) for (const k of Object.keys(l.values)) if (keyEq(k, key)) o = l.origin;
+  return o;
+}
+
+// ---------- .mailmap ----------
+
+export function parseMailmap(text) {
+  const rules = [];
+  for (const raw of String(text || '').split('\n')) {
+    const line = raw.replace(/#.*$/, '').trim();
+    if (!line) continue;
+    const m = line.match(/^([^<]*?)\s*<([^>]+)>(?:\s*([^<]*?)\s*<([^>]+)>)?$/);
+    if (!m) continue;
+    if (m[4]) rules.push({ name: m[1] || null, email: m[2], matchName: m[3] || null, matchEmail: m[4].toLowerCase() });
+    else rules.push({ name: m[1] || null, email: null, matchName: null, matchEmail: m[2].toLowerCase() });
+  }
+  return rules;
+}
+
+// Returns a function mapping {name, email} to the canonical identity from .mailmap.
+export function mailmapFor(repo) {
+  const w = repo.world;
+  let text = null;
+  if (repo.root && w.files.has(repo.root + '/.mailmap')) text = w.files.get(repo.root + '/.mailmap');
+  else {
+    const h = headCommit(repo);
+    const flat = h ? commitTreeFlat(repo, h) : null;
+    if (flat?.has('.mailmap')) text = w.objects.get(flat.get('.mailmap')).content;
+  }
+  const extra = configGet(repo, 'mailmap.file');
+  if (extra && w.files.has(expandHome(w, extra))) text = (text || '') + '\n' + w.files.get(expandHome(w, extra));
+  const rules = parseMailmap(text);
+  return (id) => {
+    if (!rules.length || !id) return id;
+    const email = String(id.email || '').toLowerCase();
+    const hit = rules.find(r => r.matchEmail === email && r.matchName && r.matchName === id.name) || rules.find(r => r.matchEmail === email && !r.matchName);
+    return hit ? { ...id, name: hit.name || id.name, email: hit.email || id.email } : id;
+  };
 }
 
 export function requireIdentity(repo) {

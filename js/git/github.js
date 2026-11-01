@@ -163,6 +163,12 @@ export function mergePR(world, bare, pr, method = 'merge', { admin = false } = {
   }
   runWorkflows(world, bare, 'push', pr.base, newHead);
   world.emit({ type: 'pr-merged', url: bare.meta.url, number: pr.number, method });
+  // "Automatically delete head branches" (gh repo edit --delete-branch-on-merge)
+  if (bare.meta.deleteBranchOnMerge && pr.headRepo === bare.meta.url && pr.head !== bare.meta.defaultBranch && !protectionFor(bare, pr.head)) {
+    delete bare.refs['refs/heads/' + pr.head];
+    pr.autoDeleted = true;
+    retargetStacked(world, bare, pr.head);
+  }
   return newHead;
 }
 
@@ -247,7 +253,7 @@ export function processQueue(world, bare) {
 
 // ---------- gh CLI ----------
 
-function ghOpts(args, { bool = [], val = [], alias = {} }) {
+export function ghOpts(args, { bool = [], val = [], alias = {} }) {
   const o = { _: [] };
   for (let i = 0; i < args.length; i++) {
     let a = alias[args[i]] || args[i];
@@ -260,7 +266,7 @@ function ghOpts(args, { bool = [], val = [], alias = {} }) {
   return o;
 }
 
-function contextRepo(ctx, { upstreamFirst = true } = {}) {
+export function contextRepo(ctx, { upstreamFirst = true } = {}) {
   const w = ctx.world;
   const repo = ctx.repo;
   if (!repo) throw new GitError('failed to determine base repo: not a git repository (or any of the parent directories): .git', 1);
@@ -275,11 +281,27 @@ function contextRepo(ctx, { upstreamFirst = true } = {}) {
   throw new GitError(`none of the git remotes configured for this repository point to a known GitHub host.\nTo tell gh about a new GitHub host, please use \`gh auth login\``, 1);
 }
 
-function findPR(bare, ref) {
+export function findPR(bare, ref) {
   const n = Number(String(ref).replace(/^#/, ''));
   const pr = bare.meta.prs.find(p => p.number === n);
   if (!pr) throw new GitError(`GraphQL: Could not resolve to a PullRequest with the number of ${ref}. (repository.pullRequest)`, 1);
   return pr;
+}
+
+// extra gh command groups (api, …) register here
+export const ghGroups = {};
+
+// When a PR's head branch is deleted after it merged, GitHub retargets the PRs stacked on
+// that branch to the merged PR's base; PRs based on a deleted branch with no merged PR close.
+export function retargetStacked(world, bare, branch) {
+  const merged = bare.meta.prs.find(p => p.state === 'merged' && p.head === branch && p.headRepo === bare.meta.url);
+  const moved = [];
+  for (const p of bare.meta.prs) {
+    if (p.state !== 'open' || p.base !== branch) continue;
+    if (merged) { p.base = merged.base; moved.push(p.number); world.emit({ type: 'pr-retargeted', url: bare.meta.url, number: p.number, base: p.base }); }
+    else { p.state = 'closed'; world.emit({ type: 'pr-closed', url: bare.meta.url, number: p.number, reason: 'base deleted' }); }
+  }
+  return { moved, base: merged?.base || null };
 }
 
 export function runGh(ctx, args, git) {
@@ -287,6 +309,7 @@ export function runGh(ctx, args, git) {
   const me = w.github.user;
   const [group, sub, ...rest] = args;
   const out = ctx.out;
+  if (ghGroups[group] && w.github.authed) return ghGroups[group](ctx, [sub, ...rest].filter(x => x !== undefined), git);
   if (group === '--version' || group === 'version') { out.push('gh version 2.63.0 (git-conquest simulator)'); return 0; }
   if (!group || group === '--help' || group === 'help') {
     out.push('Work seamlessly with GitHub from the command line.', '', 'USAGE', '  gh <command> <subcommand> [flags]', '', 'CORE COMMANDS',
@@ -413,7 +436,7 @@ export function runGh(ctx, args, git) {
       return 0;
     }
     if (sub === 'edit') {
-      const o = ghOpts(rest, { bool: ['--enable-secret-scanning', '--enable-secret-scanning-push-protection', '--disable-secret-scanning-push-protection'], val: ['--description', '-d', '--default-branch', '--visibility'] });
+      const o = ghOpts(rest, { bool: ['--enable-secret-scanning', '--enable-secret-scanning-push-protection', '--disable-secret-scanning-push-protection', '--delete-branch-on-merge', '--enable-auto-merge'], val: ['--description', '-d', '--default-branch', '--visibility'] });
       const { bare } = o._[0] ? { bare: w.remotes.get(`https://github.com/${o._[0]}.git`) } : contextRepo(ctx, { upstreamFirst: false });
       if (!bare) throw new GitError(`GraphQL: Could not resolve to a Repository with the name '${o._[0]}'. (repository)`, 1);
       if (bare.meta.owner !== me && !bare.meta.collaborators.includes(me)) throw new GitError('HTTP 403: Must have admin rights to Repository.', 1);
@@ -421,6 +444,7 @@ export function runGh(ctx, args, git) {
       if (o['--enable-secret-scanning']) bare.meta.secretScanning = true;
       if (o['--enable-secret-scanning-push-protection']) { bare.meta.secretScanning = true; bare.meta.pushProtection = true; }
       if (o['--disable-secret-scanning-push-protection']) bare.meta.pushProtection = false;
+      if (o['--delete-branch-on-merge']) bare.meta.deleteBranchOnMerge = true;
       w.emit({ type: 'repo-edit', url: bare.meta.url, pushProtection: !!bare.meta.pushProtection });
       out.push(`✓ Edited repository ${bare.meta.owner}/${bare.meta.name}`);
       return 0;
@@ -596,9 +620,14 @@ export function runGh(ctx, args, git) {
       }
       mergePR(w, bare, pr, method, { admin: o['--admin'] });
       out.push(`${C.magenta('✓')} ${method === 'squash' ? 'Squashed and merged' : method === 'rebase' ? 'Rebased and merged' : 'Merged'} pull request ${bare.meta.owner}/${bare.meta.name}#${pr.number} (${pr.title})`);
+      if (pr.autoDeleted) out.push(C.dim(`(GitHub deleted ${pr.head}: automatic head-branch deletion is on)`));
       if (o['--delete-branch']) {
         const headRepo = w.remotes.get(pr.headRepo);
-        delete headRepo.refs['refs/heads/' + pr.head];
+        if (!pr.autoDeleted) {
+          delete headRepo.refs['refs/heads/' + pr.head];
+          const rt = headRepo === bare ? retargetStacked(w, bare, pr.head) : { moved: [] };
+          if (rt.moved.length) out.push(C.dim(`(GitHub retargeted ${rt.moved.map(n => '#' + n).join(', ')} to ${rt.base})`));
+        }
         out.push(`${C.red('✓')} Deleted remote branch ${pr.head}`);
         const r = ctx.repo;
         const base = pr.base;

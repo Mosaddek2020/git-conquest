@@ -10,6 +10,8 @@ import { splitLines } from './diff.js';
 import { prepareGit } from './extras.js';
 import { contentSize, humanSize, eolInfo, looksBinary } from './filters.js';
 import { runAi } from './ai.js';
+import { isArchive, parseArchive, isBundle } from './everyday.js';
+import './ghextra.js';
 
 const OPS = ['&&', '||', ';;', ';', '|', '>>', '>', '<', '\n'];
 
@@ -618,6 +620,8 @@ const builtins = {
       const abs = this.resolvePath(f);
       const c = this.readFile(abs);
       if (c === undefined) { out.push(`${f}: ${this.world.isDir(abs) ? 'directory' : 'cannot open (No such file or directory)'}`); continue; }
+      if (isArchive(c)) { const fm = parseArchive(c).format; out.push(`${f}: ${fm === 'zip' ? 'Zip archive data' : fm === 'tar.gz' ? 'gzip compressed data (tar archive)' : 'POSIX tar archive'}`); continue; }
+      if (isBundle(c)) { out.push(`${f}: Git bundle`); continue; }
       if (looksBinary(c)) { const m = c.match(/^\u0000BINARY \d+ (.*)\u0000$/); out.push(`${f}: ${m ? m[1] : 'data'}`); continue; }
       if (/^version https:\/\/git-lfs/.test(c)) { out.push(`${f}: ASCII text (a Git LFS pointer, not the real file)`); continue; }
       const eol = eolInfo(c);
@@ -868,6 +872,42 @@ const builtins = {
   node(args, out) { out.push(C.dim('(node is not available in the simulator)')); return 0; },
   open(args, out) { out.push(C.dim('(the simulator cannot open a browser; use the panels on the right)')); return 0; },
   man(args, out) { out.push(C.dim(`(no manual pages here; try the Field Guide, or \`git help\`)`)); return 0; },
+  // tar and unzip read the archives `git archive` writes: list (-t / -l) or extract (-x)
+  tar(args, out) {
+    const flags = args.filter(x => x.startsWith('-') || /^[ctxvzfC]+$/.test(x)).join('');
+    const fi = args.findIndex(x => /^-?[a-zA-Z]*f$/.test(x));
+    const file = fi >= 0 ? args[fi + 1] : args.find(x => !x.startsWith('-'));
+    const cIdx = args.indexOf('-C');
+    if (!file) { out.push('tar: Refusing to read archive contents from terminal (missing -f option?)'); return 2; }
+    const c = this.readFile(this.resolvePath(file));
+    if (c === undefined) { out.push(`tar: ${file}: Cannot open: No such file or directory`, 'tar: Error is not recoverable: exiting now'); return 2; }
+    if (!isArchive(c) || parseArchive(c).format === 'zip') { out.push('tar: This does not look like a tar archive', 'tar: Exiting with failure status due to previous errors'); return 2; }
+    const a = parseArchive(c);
+    if (flags.includes('t')) { for (const e of a.entries) out.push(flags.includes('v') ? `-rw-r--r-- 0/0 ${String(e.size).padStart(8)} 2026-01-01 09:00 ${e.path}` : e.path); return 0; }
+    if (flags.includes('x')) {
+      const dest = cIdx >= 0 ? this.resolvePath(args[cIdx + 1]) : this.cwd;
+      for (const e of a.entries) { this.world.writeFile(normPath(dest + '/' + e.path), this.world.objects.get(e.hash)?.content ?? ''); if (flags.includes('v')) out.push(e.path); }
+      return 0;
+    }
+    out.push('tar: You must specify one of the \'-Acdtrux\' options'); return 2;
+  },
+  unzip(args, out) {
+    const file = args.find(x => !x.startsWith('-'));
+    if (!file) { out.push('UnZip 6.00. Usage: unzip [-l] file[.zip]'); return 0; }
+    const c = this.readFile(this.resolvePath(file));
+    if (c === undefined) { out.push(`unzip:  cannot find or open ${file}.`); return 9; }
+    if (!isArchive(c) || parseArchive(c).format !== 'zip') { out.push(`  End-of-central-directory signature not found.  ${file} is not a zipfile.`); return 9; }
+    const a = parseArchive(c);
+    if (args.includes('-l')) {
+      out.push(`Archive:  ${file}`, '  Length      Date    Time    Name', '---------  ---------- -----   ----');
+      for (const e of a.entries) out.push(`${String(e.size).padStart(9)}  2026-01-01 09:00   ${e.path}`);
+      out.push('---------                     -------', `${String(a.entries.reduce((n, e) => n + e.size, 0)).padStart(9)}                     ${a.entries.length} files`);
+      return 0;
+    }
+    out.push(`Archive:  ${file}`);
+    for (const e of a.entries) { this.world.writeFile(normPath(this.cwd + '/' + e.path), this.world.objects.get(e.hash)?.content ?? ''); out.push(`  inflating: ${e.path}`); }
+    return 0;
+  },
   which(args, out) { for (const a of args) out.push(builtins[a] || a === 'git' || a === 'gh' ? `/usr/bin/${a}` : `${a} not found`); return 0; },
 };
 builtins.nano = builtins.edit;

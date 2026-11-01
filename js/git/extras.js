@@ -8,14 +8,14 @@ import { unifiedHunks, splitLines, diffStats } from './diff.js';
 import {
   headCommit, currentBranch, headRef, resolve, resolveCommit, revList, mergeBase, isAncestor, commitTreeFlat,
   headTreeFlat, worktree, writeWork, removeWork, checkoutTree, computeStatus, setHeadCommit, updateRef, logRef,
-  makeCommit, indexTree, identity, requireIdentity, isGitlink, conflictHooks, skipWorktree, mergeTrees, applyMerge,
+  makeCommit, indexTree, identity, requireIdentity, isGitlink, conflictHooks, skipWorktree, mergeTrees, applyMerge, configGet,
 } from './core.js';
 import { commands, logHooks, parseOpts, relPath, treePairs, statLines, needRepo, needWorkTree, firstLine, GIT_VERSION } from './git.js';
 import { pushGuards } from './remote.js';
 import { protectionFor } from './github.js';
 import { attributesFor, parseAttributes, parsePointer, lfsPointer, lfsInstalled, contentSize, humanSize, eolInfo, looksBinary, isFakeBinary } from './filters.js';
 
-const cfg = (repo, key) => (repo && repo.config[key] !== undefined ? repo.config[key] : undefined) ?? repo?.world.globalConfig[key] ?? repo?.world.globalConfig[key.toLowerCase()];
+const cfg = (repo, key) => (repo ? configGet(repo, key) : undefined);
 const truthy = v => ['true', 'yes', 'on', '1'].includes(String(v).toLowerCase());
 const home = (w, p) => (p.startsWith('~/') ? w.home + p.slice(1) : p);
 const pl = (n, w, p = w + 's') => `${n} ${n === 1 ? w : p}`;

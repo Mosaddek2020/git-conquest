@@ -5,7 +5,7 @@ import {
   headRef, currentBranch, headCommit, updateRef, setHeadCommit, switchHead, upstreamOf, resolve, resolveCommit,
   isAncestor, revList, commitTreeFlat, checkoutTree, computeStatus, mergeBase, mergeTrees,
 } from './core.js';
-import { runWorkflows, protectionFor } from './github.js';
+import { runWorkflows, protectionFor, retargetStacked } from './github.js';
 
 export function accessRemote(ctx, url, { write = false } = {}) {
   const w = ctx.world;
@@ -297,7 +297,7 @@ export function remoteCommands({ parseOpts, needRepo, needWorkTree, mergeInto, c
         if (!bare.refs['refs/heads/' + name] && !bare.refs['refs/tags/' + name]) { results.push(` ! [remote rejected] ${name} (remote ref does not exist)`); failed = true; continue; }
         if (protectionFor(bare, name)) { results.push(` ! [remote rejected] ${name} (refusing to delete a protected branch)`); failed = true; continue; }
         const key = bare.refs['refs/heads/' + name] ? 'refs/heads/' + name : 'refs/tags/' + name;
-        toPush.push(() => { delete bare.refs[key]; delete repo.refs[`refs/remotes/${remote}/${name}`]; });
+        toPush.push(() => { delete bare.refs[key]; delete repo.refs[`refs/remotes/${remote}/${name}`]; if (key.startsWith('refs/heads/') && bare.meta.prs) retargetStacked(w, bare, name); });
         results.push(` - [deleted]         ${name}`);
         continue;
       }
