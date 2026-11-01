@@ -54,6 +54,11 @@ export function renderPath() {
     h('h2', {}, 'DevOps Conquest'),
     h('p', {}, 'Take your git skills into Linux, networking, CI/CD, containers, Kubernetes, infrastructure as code, observability, security and AI-assisted operations, with real servers simulated in your browser.'),
     h('a', { class: 'btn btn-primary', href: 'https://mosaddek2020.github.io/devops-conquest/', target: '_blank', rel: 'noopener' }, 'Open DevOps Conquest ↗')));
+  page.append(h('aside', { class: 'course-link' },
+    h('p', { class: 'eyebrow' }, 'Sibling course'),
+    h('h2', {}, 'Engineer Conquest'),
+    h('p', {}, 'Starting out as an intern or new engineer? Engineer Conquest covers the rest of the job around git: engineering habits, HTTP and HTTPS, frontend and backend, multi-tenant SaaS, and software development in the era of AI.'),
+    h('a', { class: 'btn btn-primary', href: 'https://mosaddek2020.github.io/engineer-conquest/', target: '_blank', rel: 'noopener' }, 'Open Engineer Conquest ↗')));
   return page;
 }
 

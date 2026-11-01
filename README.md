@@ -36,6 +36,6 @@ node tools/build.mjs           # dist/ for any static web server
 
 There is no backend. Progress is stored in the browser's localStorage; the Profile page can copy it as a progress code and load it in another browser.
 
-Companion course: [DevOps Conquest](https://mosaddek2020.github.io/devops-conquest/).
+Companion courses: [DevOps Conquest](https://mosaddek2020.github.io/devops-conquest/) and [Engineer Conquest](https://mosaddek2020.github.io/engineer-conquest/) (intern onboarding and software development in the era of AI).
 
 Every push to `main` runs the tests, builds `dist/` and deploys it to GitHub Pages (`.github/workflows/pages.yml`).
